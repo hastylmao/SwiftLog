@@ -1,11 +1,12 @@
-﻿import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions } from 'react-native';
+import React, { useMemo } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { theme } from '../../theme';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { useApp } from '../../store/AppContext';
+import { getTodayString } from '../../services/cache';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SPACING = 14;
@@ -14,7 +15,18 @@ const COLUMN_WIDTH = (CONTENT_WIDTH - SPACING) / 2;
 const ROW_HEIGHT = 130;
 
 export default function LoggerMainScreen({ navigation }: any) {
-  const { todayFoodLogs, todayWaterLogs, settings, supplementPlan, todaySupplementLogs, todayCardioLogs, todaySleepLogs } = useApp();
+  const {
+    todayFoodLogs,
+    todayWaterLogs,
+    todayWorkoutLogs,
+    settings,
+    supplementPlan,
+    todaySupplementLogs,
+    todayCardioLogs,
+    todaySleepLogs,
+    splitDays,
+    markWorkoutSkippedToday,
+  } = useApp();
 
   const totalCalories = useMemo(() => todayFoodLogs.reduce((sum, item) => sum + Number(item.calories || 0), 0), [todayFoodLogs]);
   const totalWater = useMemo(() => todayWaterLogs.reduce((sum, item) => sum + Number(item.amount_ml || 0), 0), [todayWaterLogs]);
@@ -22,6 +34,11 @@ export default function LoggerMainScreen({ navigation }: any) {
   const calorieGoal = settings?.target_calories || 2000;
   const cardioCalories = useMemo(() => todayCardioLogs.reduce((sum, item) => sum + Number(item.calories_burned || 0), 0), [todayCardioLogs]);
   const lastSleep = todaySleepLogs[0];
+  const currentSplitDay = useMemo(() => {
+    if (!settings || splitDays.length === 0) return null;
+    return splitDays[(settings.current_split_day || 0) % splitDays.length];
+  }, [settings, splitDays]);
+  const workoutDeferredToday = settings?.split_deferred_local_date === getTodayString();
 
   const openProfileHistory = () => {
     const parent = navigation.getParent?.();
@@ -30,6 +47,18 @@ export default function LoggerMainScreen({ navigation }: any) {
       return;
     }
     navigation.navigate('CompleteHistory');
+  };
+
+  const handleMarkMissedToday = () => {
+    if (!currentSplitDay) return;
+    Alert.alert(
+      'Missed gym today?',
+      `${currentSplitDay.day_name} will be moved to tomorrow instead of being skipped.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Move it', onPress: () => { markWorkoutSkippedToday(); } },
+      ],
+    );
   };
 
   return (
@@ -52,7 +81,7 @@ export default function LoggerMainScreen({ navigation }: any) {
           <View style={styles.leftColumn}>
             <LogTile
               title={'Log\nWorkout'}
-              subtitle="AI synced"
+              subtitle={workoutDeferredToday ? 'Moved to tomorrow' : 'AI synced'}
               icon="barbell-outline"
               colors={['rgba(79,70,229,0.30)', 'rgba(147,51,234,0.54)']}
               borderColor="rgba(99,102,241,0.38)"
@@ -117,6 +146,35 @@ export default function LoggerMainScreen({ navigation }: any) {
           </LinearGradient>
         </Pressable>
 
+        <Pressable
+          style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1 }, styles.deferTileWrap]}
+          onPress={handleMarkMissedToday}
+          disabled={!currentSplitDay || workoutDeferredToday || todayWorkoutLogs.length > 0}
+        >
+          <LinearGradient colors={['rgba(71,85,105,0.16)', 'rgba(30,41,59,0.32)']} style={[styles.deferTile, (!currentSplitDay || workoutDeferredToday || todayWorkoutLogs.length > 0) && styles.deferTileDisabled]}>
+            <View style={styles.deferLeft}>
+              <View style={styles.deferIconWrap}>
+                <Ionicons name={workoutDeferredToday ? 'checkmark-circle' : 'calendar-outline'} size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.deferTitle}>
+                  {workoutDeferredToday ? 'Workout moved to tomorrow' : 'Didn’t hit the gym today?'}
+                </Text>
+                <Text style={styles.deferMeta}>
+                  {todayWorkoutLogs.length > 0
+                    ? 'You already logged a workout today.'
+                    : workoutDeferredToday
+                      ? `${currentSplitDay?.day_name || 'Today’s split'} is queued for tomorrow.`
+                      : currentSplitDay
+                        ? `Push ${currentSplitDay.day_name} to tomorrow instead of skipping it.`
+                        : 'Set up a split to use rollover scheduling.'}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.deferCta}>{workoutDeferredToday ? 'Queued' : 'Move it'}</Text>
+          </LinearGradient>
+        </Pressable>
+
         <View style={styles.insightSection}>
           <Text style={styles.insightEyebrow}>Daily Insight</Text>
           <View style={styles.insightCard}>
@@ -127,7 +185,7 @@ export default function LoggerMainScreen({ navigation }: any) {
               <Text style={styles.insightText}>
                 {cardioCalories > 0
                   ? `Cardio is already burning ${cardioCalories} kcal today. Keep food and water logs tight so the AI can adjust recovery and macros.`
-                  : 'Your logging depth powers the AI coach. Meals, water, steps, cardio, and supplements all feed better recommendations.'}
+                  : 'Your logging depth powers the AI coach. Meals, water, steps, cardio, supplements, and skipped-day rollover all feed smarter planning.'}
               </Text>
             </View>
           </View>
@@ -416,6 +474,57 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
+  deferTileWrap: {
+    marginTop: SPACING,
+    borderRadius: 30,
+    overflow: 'hidden',
+  },
+  deferTile: {
+    minHeight: 98,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.18)',
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  deferTileDisabled: {
+    opacity: 0.72,
+  },
+  deferLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deferIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deferTitle: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  deferMeta: {
+    color: 'rgba(255,255,255,0.56)',
+    fontSize: 12,
+    marginTop: 3,
+    lineHeight: 18,
+  },
+  deferCta: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1.3,
+  },
   insightSection: {
     marginTop: 26,
   },
@@ -473,4 +582,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-

@@ -20,7 +20,7 @@ import {
   ref as storageRef, uploadBytes, getDownloadURL,
 } from 'firebase/storage';
 
-import { cache, getCacheKey, getTodayString, getStartOfDay, getEndOfDay } from '../services/cache';
+import { cache, getCacheKey, getTodayString, getStartOfDay, getEndOfDay, getLocalDateString } from '../services/cache';
 import { buildStatsFromData, checkNewAchievements } from '../services/achievementChecker';
 import { getAchievementById } from '../constants/achievements';
 
@@ -113,6 +113,7 @@ interface AppContextType extends AppState {
   logWater: (amount_ml: number) => Promise<void>;
   logWeight: (weight_kg: number) => Promise<void>;
   logSupplement: (name: string, dosage?: string) => Promise<boolean>;
+  markWorkoutSkippedToday: () => Promise<void>;
   logSteps: (steps: number) => Promise<void>;
   logCardio: (cardio_type: string, duration_minutes: number, calories_burned: number) => Promise<void>;
   logSleep: (sleep_at: string, wake_at: string) => Promise<void>;
@@ -134,7 +135,7 @@ const AppContext = createContext<AppContextType>({} as AppContextType);
 
 function toIsoDate(value?: string) {
   if (!value) return getTodayString();
-  return new Date(value).toISOString().split('T')[0];
+  return getLocalDateString(value);
 }
 
 function sortWorkoutLogs(logs: WorkoutLog[] = []): WorkoutLog[] {
@@ -622,6 +623,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     update({ activeSplit: { id: splitId, ...splitDoc } as Split, splitDays: savedDays });
+    await saveSettings({ current_split_day: 0, split_deferred_local_date: null });
     setTimeout(() => runAchievementCheck(), 500);
   };
 
@@ -739,7 +741,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (stateRef.current.settings && stateRef.current.splitDays.length > 0) {
         const nextDay = ((stateRef.current.settings.current_split_day || 0) + 1) % stateRef.current.splitDays.length;
-        await saveSettings({ current_split_day: nextDay });
+        await saveSettings({ current_split_day: nextDay, split_deferred_local_date: null });
+      } else if (stateRef.current.settings?.split_deferred_local_date) {
+        await saveSettings({ split_deferred_local_date: null });
       }
 
       const savedWorkout: WorkoutLog = { id: docId, ...docData } as any;
@@ -751,6 +755,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to log workout' });
       return null;
     }
+  };
+
+  const markWorkoutSkippedToday = async () => {
+    const today = getTodayString();
+    const { settings, splitDays, todayWorkoutLogs } = stateRef.current;
+
+    if (!settings || splitDays.length === 0) {
+      Toast.show({ type: 'info', text1: 'No split active', text2: 'Set up a training split first.' });
+      return;
+    }
+
+    if (todayWorkoutLogs.length > 0) {
+      Toast.show({ type: 'info', text1: 'Workout already logged', text2: 'Today has a workout entry already.' });
+      return;
+    }
+
+    if (settings.split_deferred_local_date === today) {
+      Toast.show({ type: 'info', text1: 'Already moved', text2: 'Today’s split is already queued for tomorrow.' });
+      return;
+    }
+
+    await saveSettings({ split_deferred_local_date: today });
+    Toast.show({ type: 'success', text1: 'Workout moved', text2: 'Today’s split will roll over to tomorrow.' });
   };
 
   // ── Water logs ─────────────────────────────────────────────────────────
@@ -1156,6 +1183,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logWater,
       logWeight,
       logSupplement,
+      markWorkoutSkippedToday,
       logSteps,
       logCardio,
       logSleep,

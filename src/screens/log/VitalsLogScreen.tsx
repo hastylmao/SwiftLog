@@ -9,6 +9,13 @@ import { useApp } from '../../store/AppContext';
 import Card from '../../components/ui/Card';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import Toast from 'react-native-toast-message';
+import { getTodayString, getLocalDateString } from '../../services/cache';
+
+function toLocalIso(date: string, time: string): string {
+    const [year, month, day] = date.split('-').map(Number);
+    const [hours, minutes] = time.split(':').map(Number);
+    return new Date(year, (month || 1) - 1, day || 1, hours || 0, minutes || 0, 0, 0).toISOString();
+}
 
 export default function VitalsLogScreen({ navigation }: any) {
     const { logSteps, logSleep, logWeight, todayStepsLogs, todaySleepLogs, user } = useApp();
@@ -31,12 +38,14 @@ export default function VitalsLogScreen({ navigation }: any) {
     };
 
     const handleLogSleep = async () => {
-        const today = new Date().toISOString().split('T')[0];
-        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        const today = getTodayString();
+        const yesterdayDate = new Date();
+        yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+        const yesterday = getLocalDateString(yesterdayDate);
 
         // Simple mock: assume sleep was yesterday night, wake was today morning
-        const sleepAt = `${yesterday}T${sleepStart}:00Z`;
-        const wakeAt = `${today}T${sleepEnd}:00Z`;
+        const sleepAt = toLocalIso(yesterday, sleepStart);
+        const wakeAt = toLocalIso(today, sleepEnd);
 
         try {
             await logSleep(sleepAt, wakeAt);

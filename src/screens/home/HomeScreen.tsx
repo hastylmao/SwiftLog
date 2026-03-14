@@ -11,6 +11,7 @@ import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { getDailyAdvice, checkAutoRegulation, matchMacros, parseVoiceLog } from '../../services/gemini';
 import { getMuscleIcon } from '../../constants/icons';
 import { AutoRegulation, MacroMatch, VoiceLogResult } from '../../types';
+import { getTodayString } from '../../services/cache';
 import { Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
@@ -54,6 +55,7 @@ export default function HomeScreen({ navigation }: any) {
     activeSplit,
     supplementPlan,
     logSupplement,
+    markWorkoutSkippedToday,
   } = useApp();
 
   const [refreshing, setRefreshing] = useState(false);
@@ -273,16 +275,46 @@ export default function HomeScreen({ navigation }: any) {
     return splitDays[dayIndex];
   }, [settings, splitDays]);
 
+  const workoutDeferredToday = settings?.split_deferred_local_date === getTodayString();
   const latestSleep = todaySleepLogs[0];
   const sleepMetrics = getSleepMetrics(latestSleep?.sleep_at, latestSleep?.wake_at);
   const checkedSupplements = new Set(todaySupplementLogs.map((item) => item.supplement_name.trim().toLowerCase()));
   const remainingCalories = Math.max(0, targets.calories - totals.calories);
-  const workoutTitle = todayWorkoutLogs[0]?.title || (currentSplitDay ? `${currentSplitDay.day_name}: ${currentSplitDay.muscle_groups.join(', ')}` : 'Recovery Day');
+  const workoutTitle = todayWorkoutLogs[0]?.title || (
+    workoutDeferredToday
+      ? currentSplitDay
+        ? `${currentSplitDay.day_name} moved to tomorrow`
+        : 'Workout moved to tomorrow'
+      : currentSplitDay
+        ? `${currentSplitDay.day_name}: ${currentSplitDay.muscle_groups.join(', ')}`
+        : 'Recovery Day'
+  );
   const workoutMeta = todayWorkoutLogs.length > 0
     ? `${todayWorkoutLogs.length} workout logged today`
-    : currentSplitDay
-      ? 'Scheduled for today'
-      : 'No split scheduled';
+    : workoutDeferredToday
+      ? 'Marked as missed today'
+      : currentSplitDay
+        ? 'Scheduled for today'
+        : 'No split scheduled';
+  const workoutSubMeta = todayWorkoutLogs.length > 0
+    ? 'Split will advance after today’s logged session'
+    : workoutDeferredToday
+      ? 'This exact split stays queued and will show again tomorrow'
+      : currentSplitDay?.muscle_groups?.length
+        ? `Next focus: ${currentSplitDay.muscle_groups.join(', ')}`
+        : 'Mobility and recovery';
+
+  const handleMarkMissedToday = useCallback(() => {
+    if (!currentSplitDay) return;
+    Alert.alert(
+      'Missed gym today?',
+      `${currentSplitDay.day_name} will be pushed to tomorrow instead of being skipped.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Move it', onPress: () => { markWorkoutSkippedToday(); } },
+      ],
+    );
+  }, [currentSplitDay, markWorkoutSkippedToday]);
 
   return (
     <View style={styles.container}>
@@ -358,10 +390,26 @@ export default function HomeScreen({ navigation }: any) {
             <View style={{ flex: 1 }}>
               <Text style={styles.workoutTitle}>{workoutTitle}</Text>
               <Text style={styles.workoutMeta}>{workoutMeta}</Text>
-              <Text style={styles.workoutSubMeta}>Next focus: {currentSplitDay?.muscle_groups?.join(', ') || 'Mobility and recovery'}</Text>
+              <Text style={styles.workoutSubMeta}>{workoutSubMeta}</Text>
             </View>
             <Pressable style={styles.playButton} onPress={() => openTab('Log', 'WorkoutLog')}>
               <Ionicons name="play" size={16} color="#000" />
+            </Pressable>
+          </View>
+          <View style={styles.workoutActionRow}>
+            <Pressable style={styles.workoutActionPrimary} onPress={() => openTab('Log', 'WorkoutLog')}>
+              <Ionicons name="barbell-outline" size={16} color="#000" />
+              <Text style={styles.workoutActionPrimaryText}>Log workout</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.workoutActionSecondary, (!currentSplitDay || workoutDeferredToday || todayWorkoutLogs.length > 0) && styles.workoutActionSecondaryDisabled]}
+              onPress={handleMarkMissedToday}
+              disabled={!currentSplitDay || workoutDeferredToday || todayWorkoutLogs.length > 0}
+            >
+              <Ionicons name={workoutDeferredToday ? 'checkmark-circle' : 'calendar-outline'} size={16} color="#fff" />
+              <Text style={styles.workoutActionSecondaryText}>
+                {workoutDeferredToday ? 'Moved to tomorrow' : 'Missed gym today'}
+              </Text>
             </Pressable>
           </View>
         </LinearGradient>
@@ -848,6 +896,49 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  workoutActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+  workoutActionPrimary: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 16,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  workoutActionPrimaryText: {
+    color: '#000',
+    fontSize: 13,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  workoutActionSecondary: {
+    flex: 1.2,
+    minHeight: 46,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  workoutActionSecondaryDisabled: {
+    opacity: 0.6,
+  },
+  workoutActionSecondaryText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   metricGrid: {
     flexDirection: 'row',

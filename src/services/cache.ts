@@ -92,18 +92,41 @@ export function getCacheKey(userId: string, type: string, date?: string): string
   return date ? `${userId}_${type}_${date}` : `${userId}_${type}`;
 }
 
+export function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseLocalDateString(date?: string): Date {
+  if (!date) return new Date();
+  const [year, month, day] = date.split('-').map(Number);
+  if (!year || !month || !day) return new Date(date);
+  return new Date(year, month - 1, day);
+}
+
+export function getLocalDateString(value?: string | Date): string {
+  if (!value) return formatLocalDate(new Date());
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return formatLocalDate(new Date());
+  }
+  return formatLocalDate(date);
+}
+
 export function getTodayString(): string {
-  return new Date().toISOString().split('T')[0];
+  return formatLocalDate(new Date());
 }
 
 export function getStartOfDay(date?: string): string {
-  const d = date ? new Date(date) : new Date();
+  const d = parseLocalDateString(date);
   d.setHours(0, 0, 0, 0);
   return d.toISOString();
 }
 
 export function getEndOfDay(date?: string): string {
-  const d = date ? new Date(date) : new Date();
+  const d = parseLocalDateString(date);
   d.setHours(23, 59, 59, 999);
   return d.toISOString();
 }

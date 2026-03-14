@@ -30,6 +30,7 @@ export default function ScanScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState('Looking up nutrition data');
   const [product, setProduct] = useState<ProductAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastScanned = useRef<string>('');
@@ -40,6 +41,7 @@ export default function ScanScreen() {
     lastScanned.current = result.data;
     setScanned(true);
     setLoading(true);
+    setLoadingStage('Checking product database');
     setError(null);
     setProduct(null);
     try {
@@ -53,6 +55,7 @@ export default function ScanScreen() {
         result.type,
         settings?.gemini_api_key || '',
         authToken,
+        setLoadingStage,
       );
       setProduct(analysis);
     } catch (err: any) {
@@ -137,7 +140,7 @@ export default function ScanScreen() {
               <Animated.View entering={FadeIn} style={styles.loadingWrap}>
                 <Ionicons name="sparkles" size={36} color={theme.colors.accent} />
                 <Text style={styles.loadingTitle}>Analyzing product...</Text>
-                <Text style={styles.loadingSub}>Looking up nutrition data</Text>
+                <Text style={styles.loadingSub}>{loadingStage}</Text>
                 <ActivityIndicator color={theme.colors.accent} style={{ marginTop: 16 }} />
               </Animated.View>
             ) : error ? (

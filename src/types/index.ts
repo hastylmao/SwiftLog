@@ -29,6 +29,7 @@ export interface UserSettings {
   water_goal_ml: number;
   current_split_day: number;
   supplement_plan?: string[];
+  split_deferred_local_date?: string | null;
   created_at: string;
   updated_at: string;
 }

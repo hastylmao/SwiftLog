@@ -11,7 +11,22 @@ import { checkRateLimit, incrementRateLimit, getRateLimitError } from './rateLim
 const PERSONAL_MODEL = 'gemini-2.5-flash';
 const FUNCTIONS_URL = 'https://geminiproxy-gvrxpzalkq-uc.a.run.app';
 const OPEN_FOOD_FACTS_URL = 'https://world.openfoodfacts.org/api/v2/product';
-const OPEN_FOOD_FACTS_TIMEOUT_MS = 6000;
+const OPEN_FOOD_FACTS_TIMEOUT_MS = 2500;
+const OPEN_FOOD_FACTS_FIELDS = [
+  'product_name',
+  'product_name_en',
+  'brands',
+  'serving_size',
+  'quantity',
+  'product_quantity',
+  'nutriments',
+  'ingredients_text',
+  'ingredients_text_en',
+  'nova_group',
+  'additives_tags',
+  'allergens_tags',
+].join(',');
+const BARCODE_RESULT_CACHE = new Map<string, ProductAnalysis>();
 
 // ── Rate limit guard ───────────────────────────────────────────────────
 async function enforceRateLimit(feature: string): Promise<void> {
@@ -82,6 +97,27 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function normalizeBarcodeValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  const compactNumeric = trimmed.replace(/[\s-]/g, '');
+  if (/^\d{8,14}$/.test(compactNumeric)) {
+    return compactNumeric;
+  }
+
+  const digitRuns = trimmed.match(/\d{8,14}/g);
+  if (digitRuns?.length) {
+    return [...digitRuns].sort((a, b) => b.length - a.length)[0];
+  }
+
+  return trimmed;
+}
+
+function looksLikeRetailBarcode(value: string): boolean {
+  return /^\d{8,14}$/.test(value);
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -594,12 +630,23 @@ export async function analyzeProductBarcode(
   barcodeData: string,
   barcodeType: string,
   userApiKey: string,
-  authToken?: string
+  authToken?: string,
+  onStageChange?: (message: string) => void
 ): Promise<ProductAnalysis> {
+  const normalizedBarcode = normalizeBarcodeValue(barcodeData);
+  const cacheKey = `${barcodeType}:${normalizedBarcode || barcodeData}`;
+  const cached = BARCODE_RESULT_CACHE.get(cacheKey);
+  if (cached) return cached;
+
+  if (barcodeType === 'qr' && !looksLikeRetailBarcode(normalizedBarcode)) {
+    throw new Error('That QR code is not a product barcode. Scan the printed barcode on the package.');
+  }
+
   // Step 1: Look up in Open Food Facts (real product database)
   let offProduct: any = null;
+  onStageChange?.('Checking product database...');
   try {
-    const offRes = await fetchWithTimeout(`${OPEN_FOOD_FACTS_URL}/${encodeURIComponent(barcodeData)}.json`, {
+    const offRes = await fetchWithTimeout(`${OPEN_FOOD_FACTS_URL}/${encodeURIComponent(normalizedBarcode || barcodeData)}.json?fields=${encodeURIComponent(OPEN_FOOD_FACTS_FIELDS)}`, {
       headers: { 'User-Agent': 'SwiftLogger/1.0 (fitness-app)' },
     }, OPEN_FOOD_FACTS_TIMEOUT_MS);
     if (offRes.ok) {
@@ -684,7 +731,7 @@ export async function analyzeProductBarcode(
       : protein > 10 ? 'Good protein content with reasonable macros.'
       : 'Moderate nutritional profile.';
 
-    return {
+    const result = {
       product_name: offProduct.product_name || offProduct.product_name_en || 'Unknown',
       brand: offProduct.brands || 'Unknown',
       serving_size: offProduct.serving_size || offProduct.quantity || 'per 100g',
@@ -705,13 +752,16 @@ export async function analyzeProductBarcode(
       additives: additivesList,
       allergens: allergensList,
     };
+    BARCODE_RESULT_CACHE.set(cacheKey, result);
+    return result;
   }
 
   // No database match — fall back to AI guess
-  const prompt = `You are a food product nutrition expert. A user scanned a barcode but it was NOT found in the Open Food Facts database.
+  onStageChange?.('Database miss. Estimating with AI...');
+  const prompt = `You are a food product nutrition expert. A retail barcode lookup missed, so estimate the product nutrition from the barcode.
 
 Barcode type: ${barcodeType}
-Barcode data: ${barcodeData}
+Barcode data: ${normalizedBarcode || barcodeData}
 
 Try to identify this product from the barcode number. Common barcode prefixes: 890 = India, 0-09 = USA/Canada, 30-37 = France, 400-440 = Germany, 45-49 = Japan, 50 = UK, 87 = Netherlands, 880 = South Korea.
 
@@ -755,7 +805,7 @@ Respond ONLY in JSON:
     const result = await model.generateContent(prompt);
     parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
   } else if (authToken) {
-    parsed = await callGeminiProxy<ProductAnalysis>('barcode', { barcodeData, barcodeType }, authToken);
+    parsed = await callGeminiProxy<ProductAnalysis>('barcode', { barcodeData: normalizedBarcode || barcodeData, barcodeType }, authToken);
   } else {
     throw new Error('Gemini API key required. Add it in Settings.');
   }
@@ -774,5 +824,6 @@ Respond ONLY in JSON:
   parsed.additives = Array.isArray(parsed.additives) ? parsed.additives : [];
   parsed.allergens = Array.isArray(parsed.allergens) ? parsed.allergens : [];
   parsed.product_weight_g = safeNum(parsed.product_weight_g);
+  BARCODE_RESULT_CACHE.set(cacheKey, parsed);
   return parsed;
 }
