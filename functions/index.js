@@ -81,31 +81,39 @@ exports.geminiProxy = https.onRequest(
 
       let geminiText = "";
 
-      if (type === "food_text") {
-        const prompt = `You are a nutrition analyst. Given a text description of food, estimate the calories, protein (g), carbs (g), and fat (g). Be as accurate as possible. Consider typical Indian serving sizes if the food is Indian. Respond ONLY in JSON format: {"calories": number, "protein": number, "carbs": number, "fat": number, "food_name": string}.\n\nDescription: ${payload.description}`;
-        const result = await model.generateContent(prompt);
-        geminiText = result.response.text();
-      } else if (type === "food_image") {
-        const prompt = `You are a nutrition analyst. Given a photo of food and a text description, estimate the calories, protein (g), carbs (g), and fat (g). Be as accurate as possible. Respond ONLY in JSON format: {"calories": number, "protein": number, "carbs": number, "fat": number, "food_name": string}.\n\nDescription: ${payload.description}`;
-        const result = await model.generateContent([
-          prompt,
-          { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
-        ]);
-        geminiText = result.response.text();
-      } else if (type === "chat") {
-        // Chat mode: Build system prompt + history
-        const { message, systemPrompt, history } = payload;
-        const chat = model.startChat({
-          history: [
-            { role: 'user', parts: [{ text: systemPrompt }] },
-            { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
-            ...history,
-          ],
+      try {
+        if (type === "food_text") {
+          const prompt = `You are a nutrition analyst. Given a text description of food, estimate the calories, protein (g), carbs (g), and fat (g). Be as accurate as possible. Consider typical Indian serving sizes if the food is Indian. Respond ONLY in JSON format: {"calories": number, "protein": number, "carbs": number, "fat": number, "food_name": string}.\n\nDescription: ${payload.description}`;
+          const result = await model.generateContent(prompt);
+          geminiText = result.response.text();
+        } else if (type === "food_image") {
+          const prompt = `You are a nutrition analyst. Given a photo of food and a text description, estimate the calories, protein (g), carbs (g), and fat (g). Be as accurate as possible. Respond ONLY in JSON format: {"calories": number, "protein": number, "carbs": number, "fat": number, "food_name": string}.\n\nDescription: ${payload.description}`;
+          const result = await model.generateContent([
+            prompt,
+            { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
+          ]);
+          geminiText = result.response.text();
+        } else if (type === "chat") {
+          // Chat mode: Build system prompt + history
+          const { message, systemPrompt, history } = payload;
+          const chat = model.startChat({
+            history: [
+              { role: 'user', parts: [{ text: systemPrompt }] },
+              { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
+              ...history,
+            ],
+          });
+          const result = await chat.sendMessage(message);
+          geminiText = result.response.text();
+        } else {
+          return res.status(400).json({ error: "Unsupported request type" });
+        }
+      } catch (geminiErr) {
+        console.error('[geminiProxy] Gemini API error:', geminiErr.message || geminiErr);
+        return res.status(502).json({ 
+          error: "AI service error: " + (geminiErr.message || "Unknown error"),
+          details: geminiErr.toString()
         });
-        const result = await chat.sendMessage(message);
-        geminiText = result.response.text();
-      } else {
-        return res.status(400).json({ error: "Unsupported request type" });
       }
 
       // Parse JSON from response (only for food types)
