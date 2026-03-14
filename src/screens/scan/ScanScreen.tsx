@@ -107,14 +107,14 @@ export default function ScanScreen() {
           <CameraView
             style={StyleSheet.absoluteFill}
             facing="back"
-            barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e', 'qr', 'code128', 'code39'] }}
+            barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] }}
             onBarcodeScanned={handleBarcode}
           />
           {/* Overlay */}
           <View style={styles.overlay}>
             <View style={styles.overlayTop}>
               <Text style={styles.overlayTitle}>Scan Product</Text>
-              <Text style={styles.overlaySub}>Point at a barcode or QR code</Text>
+              <Text style={styles.overlaySub}>Point at the printed retail barcode on the package</Text>
             </View>
             <View style={styles.scanFrameWrap}>
               <View style={styles.scanFrame}>
@@ -127,7 +127,7 @@ export default function ScanScreen() {
             <View style={styles.overlayBottom}>
               <View style={styles.hintPill}>
                 <Ionicons name="barcode-outline" size={16} color="#fff" />
-                <Text style={styles.hintText}>EAN, UPC, QR codes supported</Text>
+                <Text style={styles.hintText}>EAN and UPC retail barcodes only</Text>
               </View>
             </View>
           </View>

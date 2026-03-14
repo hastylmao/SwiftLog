@@ -638,8 +638,8 @@ export async function analyzeProductBarcode(
   const cached = BARCODE_RESULT_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  if (barcodeType === 'qr' && !looksLikeRetailBarcode(normalizedBarcode)) {
-    throw new Error('That QR code is not a product barcode. Scan the printed barcode on the package.');
+  if (!looksLikeRetailBarcode(normalizedBarcode)) {
+    throw new Error('That is not a supported retail barcode. Scan the printed UPC or EAN code on the package.');
   }
 
   // Step 1: Look up in Open Food Facts (real product database)
@@ -756,74 +756,5 @@ export async function analyzeProductBarcode(
     return result;
   }
 
-  // No database match — fall back to AI guess
-  onStageChange?.('Database miss. Estimating with AI...');
-  const prompt = `You are a food product nutrition expert. A retail barcode lookup missed, so estimate the product nutrition from the barcode.
-
-Barcode type: ${barcodeType}
-Barcode data: ${normalizedBarcode || barcodeData}
-
-Try to identify this product from the barcode number. Common barcode prefixes: 890 = India, 0-09 = USA/Canada, 30-37 = France, 400-440 = Germany, 45-49 = Japan, 50 = UK, 87 = Netherlands, 880 = South Korea.
-
-If you can identify the product, provide accurate nutritional data. If not, set product_name to "Unknown Product — try scanning again".
-
-Health rating criteria:
-- "dangerous": Banned substances, very high trans fats, excessive sodium, known harmful additives
-- "bad": High added sugars (>15g), high saturated fat, mostly empty calories, heavily processed
-- "alright": Moderate nutritional value, some processing
-- "good": Decent macro profile, limited processing, beneficial nutrients
-- "healthy": Whole/minimally processed, high protein or fiber, clean ingredients
-
-Respond ONLY in JSON:
-{
-  "product_name": string,
-  "brand": string,
-  "serving_size": string,
-  "calories": number,
-  "protein": number,
-  "carbs": number,
-  "fat": number,
-  "sugar": number,
-  "fiber": number,
-  "sodium_mg": number,
-  "saturated_fat": number,
-  "trans_fat": number,
-  "cholesterol_mg": number,
-  "ingredients_concern": [string],
-  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
-  "health_reasoning": string,
-  "additives": [string],
-  "allergens": [string]
-}`;
-
-  await enforceRateLimit('analyze_barcode');
-  let parsed: ProductAnalysis;
-
-  if (userApiKey) {
-    const ai = new GoogleGenerativeAI(userApiKey);
-    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-    const result = await model.generateContent(prompt);
-    parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
-  } else if (authToken) {
-    parsed = await callGeminiProxy<ProductAnalysis>('barcode', { barcodeData: normalizedBarcode || barcodeData, barcodeType }, authToken);
-  } else {
-    throw new Error('Gemini API key required. Add it in Settings.');
-  }
-
-  parsed.calories = safeNum(parsed.calories);
-  parsed.protein = safeNum(parsed.protein);
-  parsed.carbs = safeNum(parsed.carbs);
-  parsed.fat = safeNum(parsed.fat);
-  parsed.sugar = safeNum(parsed.sugar);
-  parsed.fiber = safeNum(parsed.fiber);
-  parsed.saturated_fat = safeNum(parsed.saturated_fat);
-  parsed.trans_fat = safeNum(parsed.trans_fat);
-  parsed.sodium_mg = safeNum(parsed.sodium_mg);
-  parsed.cholesterol_mg = safeNum(parsed.cholesterol_mg);
-  parsed.ingredients_concern = Array.isArray(parsed.ingredients_concern) ? parsed.ingredients_concern : [];
-  parsed.additives = Array.isArray(parsed.additives) ? parsed.additives : [];
-  parsed.allergens = Array.isArray(parsed.allergens) ? parsed.allergens : [];
-  parsed.product_weight_g = safeNum(parsed.product_weight_g);
-  BARCODE_RESULT_CACHE.set(cacheKey, parsed);
-  return parsed;
+  throw new Error('Product not found in the verified nutrition database. Try scanning the barcode again or log it manually.');
 }
