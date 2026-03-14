@@ -133,6 +133,47 @@ exports.geminiProxy = https.onRequest(
           });
           const result = await chat.sendMessage(message);
           geminiText = result.response.text();
+        } else if (type === "barcode") {
+          const prompt = `You are a food product nutrition expert. A user scanned a barcode but it was not found in the Open Food Facts database.
+
+Barcode type: ${payload.barcodeType}
+Barcode data: ${payload.barcodeData}
+
+Try to identify this product from the barcode number. Common barcode prefixes: 890 = India, 0-09 = USA/Canada, 30-37 = France, 400-440 = Germany, 45-49 = Japan, 50 = UK, 87 = Netherlands, 880 = South Korea.
+
+If you can identify the product, provide accurate nutritional data. If not, set product_name to "Unknown Product - try scanning again".
+
+Health rating criteria:
+- "dangerous": Banned substances, very high trans fats, excessive sodium, known harmful additives
+- "bad": High added sugars (>15g), high saturated fat, mostly empty calories, heavily processed
+- "alright": Moderate nutritional value, some processing
+- "good": Decent macro profile, limited processing, beneficial nutrients
+- "healthy": Whole/minimally processed, high protein or fiber, clean ingredients
+
+Respond ONLY in JSON:
+{
+  "product_name": string,
+  "brand": string,
+  "serving_size": string,
+  "product_weight_g": number,
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "sugar": number,
+  "fiber": number,
+  "sodium_mg": number,
+  "saturated_fat": number,
+  "trans_fat": number,
+  "cholesterol_mg": number,
+  "ingredients_concern": [string],
+  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string,
+  "additives": [string],
+  "allergens": [string]
+}`;
+          const result = await model.generateContent(prompt);
+          geminiText = result.response.text();
         } else {
           return res.status(400).json({ error: "Unsupported request type" });
         }

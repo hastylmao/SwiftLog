@@ -10,6 +10,8 @@ import { checkRateLimit, incrementRateLimit, getRateLimitError } from './rateLim
 
 const PERSONAL_MODEL = 'gemini-2.5-flash';
 const FUNCTIONS_URL = 'https://geminiproxy-gvrxpzalkq-uc.a.run.app';
+const OPEN_FOOD_FACTS_URL = 'https://world.openfoodfacts.org/api/v2/product';
+const OPEN_FOOD_FACTS_TIMEOUT_MS = 6000;
 
 // ── Rate limit guard ───────────────────────────────────────────────────
 async function enforceRateLimit(feature: string): Promise<void> {
@@ -46,11 +48,11 @@ export function safeNum(val: any, fallback = 0): number {
 // ──────────────────────────────────────────────────────────────────────────
 // Call Gemini proxy on Firebase Cloud Functions (shared key)
 // ──────────────────────────────────────────────────────────────────────────
-async function callGeminiProxy(
-  type: 'food_text' | 'food_image' | 'workout',
+async function callGeminiProxy<T>(
+  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'chat',
   payload: any,
   authToken: string
-): Promise<GeminiNutritionResponse | GeminiWorkoutResponse> {
+): Promise<T> {
   const response = await fetch(FUNCTIONS_URL, {
     method: 'POST',
     headers: {
@@ -65,7 +67,21 @@ async function callGeminiProxy(
     throw new Error(error || `Firebase function error: ${response.status}`);
   }
 
-  return response.json();
+  return response.json() as Promise<T>;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -92,7 +108,7 @@ export async function analyzeFood(
     return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
   } else if (authToken) {
     // Use shared key via proxy
-    const parsed = await callGeminiProxy('food_image', { imageBase64, description }, authToken);
+    const parsed = await callGeminiProxy<GeminiNutritionResponse>('food_image', { imageBase64, description }, authToken);
     return {
       ...parsed,
       calories: safeNum((parsed as any).calories),
@@ -125,7 +141,7 @@ export async function analyzeFoodTextOnly(
     return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
   } else if (authToken) {
     // Use shared key via proxy
-    const parsed = await callGeminiProxy('food_text', { description }, authToken);
+    const parsed = await callGeminiProxy<GeminiNutritionResponse>('food_text', { description }, authToken);
     return {
       ...parsed,
       calories: safeNum((parsed as any).calories),
@@ -398,7 +414,7 @@ export async function chatWithAI(
     return result.response.text();
   } else if (authToken) {
     // Use shared key via proxy
-    const response = await callGeminiProxy('chat', { message, systemPrompt, history }, authToken);
+    const response = await callGeminiProxy<{ text: string }>('chat', { message, systemPrompt, history }, authToken);
     return (response as any).text || 'Unable to generate response';
   }
   
@@ -577,14 +593,15 @@ export interface ProductAnalysis {
 export async function analyzeProductBarcode(
   barcodeData: string,
   barcodeType: string,
-  userApiKey: string
+  userApiKey: string,
+  authToken?: string
 ): Promise<ProductAnalysis> {
   // Step 1: Look up in Open Food Facts (real product database)
   let offProduct: any = null;
   try {
-    const offRes = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcodeData)}.json`, {
+    const offRes = await fetchWithTimeout(`${OPEN_FOOD_FACTS_URL}/${encodeURIComponent(barcodeData)}.json`, {
       headers: { 'User-Agent': 'SwiftLogger/1.0 (fitness-app)' },
-    });
+    }, OPEN_FOOD_FACTS_TIMEOUT_MS);
     if (offRes.ok) {
       const offData = await offRes.json();
       if (offData.status === 1 && offData.product) {
@@ -649,7 +666,6 @@ export async function analyzeProductBarcode(
     if (saturated_fat > 8 && health_rating === 'alright') { health_rating = 'bad'; concerns.push('High saturated fat'); }
     if (sodium_mg > 600 && health_rating === 'alright') { concerns.push('Moderate-high sodium'); }
     if (nova === 4 && health_rating === 'alright') { health_rating = 'bad'; concerns.push('Ultra-processed (NOVA 4)'); }
-    if (nova === 4 && health_rating === 'good') { health_rating = 'alright'; }
 
     // Positive checks
     if (protein > 15 && sugar < 5 && saturated_fat < 3 && nova <= 2) { health_rating = 'healthy'; }
@@ -730,14 +746,20 @@ Respond ONLY in JSON:
   "allergens": [string]
 }`;
 
-  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('analyze_barcode');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  let parsed: ProductAnalysis;
 
-  const parsed = parseJsonFromText<ProductAnalysis>(text);
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const result = await model.generateContent(prompt);
+    parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
+  } else if (authToken) {
+    parsed = await callGeminiProxy<ProductAnalysis>('barcode', { barcodeData, barcodeType }, authToken);
+  } else {
+    throw new Error('Gemini API key required. Add it in Settings.');
+  }
+
   parsed.calories = safeNum(parsed.calories);
   parsed.protein = safeNum(parsed.protein);
   parsed.carbs = safeNum(parsed.carbs);

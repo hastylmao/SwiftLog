@@ -45,6 +45,17 @@ const MACRO_COLORS = {
   fat: theme.colors.macroFat,
 };
 
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export default function FoodLogScreen({ route, navigation }: any) {
   const { logFood, settings, todayFoodLogs, deleteFood } = useApp();
   const [mode, setMode] = useState<'manual' | 'ai' | 'barcode'>(route?.params?.aiMode ? 'ai' : 'manual');
@@ -74,7 +85,7 @@ export default function FoodLogScreen({ route, navigation }: any) {
     setBarcodeScanned(true);
     setBarcodeLoading(true);
     try {
-      const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${data}.json`);
+      const res = await fetchWithTimeout(`https://world.openfoodfacts.org/api/v2/product/${data}.json`, 6000);
       const json = await res.json();
       const n = json?.product?.nutriments;
       const name = json?.product?.product_name || json?.product?.product_name_en || '';
@@ -112,7 +123,7 @@ export default function FoodLogScreen({ route, navigation }: any) {
         setMode('manual');
       }
     } catch {
-      Toast.show({ type: 'error', text1: 'Scan Failed', text2: 'Check your internet connection.' });
+      Toast.show({ type: 'error', text1: 'Scan Failed', text2: 'Product lookup timed out or failed.' });
       setBarcodeScanned(false);
     }
     setBarcodeLoading(false);
@@ -121,16 +132,15 @@ export default function FoodLogScreen({ route, navigation }: any) {
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.8,
-      base64: true,
+      quality: 0.65,
     });
 
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
       const manipulated = await ImageManipulator.manipulateAsync(
         asset.uri,
-        [{ resize: { width: 800 } }],
-        { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        [{ resize: { width: 640 } }],
+        { compress: 0.55, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
       setImageUri(manipulated.uri);
       setImageBase64(manipulated.base64 || null);
@@ -144,16 +154,15 @@ export default function FoodLogScreen({ route, navigation }: any) {
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
-      quality: 0.8,
-      base64: true,
+      quality: 0.65,
     });
 
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
       const manipulated = await ImageManipulator.manipulateAsync(
         asset.uri,
-        [{ resize: { width: 800 } }],
-        { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        [{ resize: { width: 640 } }],
+        { compress: 0.55, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
       setImageUri(manipulated.uri);
       setImageBase64(manipulated.base64 || null);
@@ -172,7 +181,7 @@ export default function FoodLogScreen({ route, navigation }: any) {
       let authToken: string | undefined;
       try {
         if (!apiKey && auth.currentUser) {
-          authToken = await auth.currentUser.getIdToken(true); // force refresh
+          authToken = await auth.currentUser.getIdToken();
         }
       } catch (tokenErr) {
         console.warn('[FoodLog] Failed to get auth token:', tokenErr);

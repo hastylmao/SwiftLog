@@ -11,6 +11,7 @@ import Toast from 'react-native-toast-message';
 import { theme } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { analyzeProductBarcode, ProductAnalysis } from '../../services/gemini';
+import { auth } from '../../services/firebase';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { FoodLog } from '../../types';
 
@@ -42,14 +43,20 @@ export default function ScanScreen() {
     setError(null);
     setProduct(null);
     try {
+      let authToken: string | undefined;
+      if (!settings?.gemini_api_key && auth.currentUser) {
+        authToken = await auth.currentUser.getIdToken();
+      }
+
       const analysis = await analyzeProductBarcode(
         result.data,
         result.type,
         settings?.gemini_api_key || '',
+        authToken,
       );
       setProduct(analysis);
-    } catch {
-      setError('Failed to analyze product. Try scanning again.');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to analyze product. Try scanning again.');
     }
     setLoading(false);
   }, [scanned, loading, settings?.gemini_api_key]);
