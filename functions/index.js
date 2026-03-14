@@ -92,11 +92,34 @@ exports.geminiProxy = https.onRequest(
           { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
         ]);
         geminiText = result.response.text();
+      } else if (type === "generate_content_raw") {
+        const reqPayload = payload.imageBase64 ? [
+          payload.prompt,
+          { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } }
+        ] : payload.prompt;
+        const result = await model.generateContent(reqPayload);
+
+        await usageRef.update({
+          requests_today: (usage.requests_today || 0) + 1,
+          requests_this_hour: (usage.requests_this_hour || 0) + 1,
+          last_hour: hour,
+        });
+        return res.status(200).json({ text: result.response.text() });
+      } else if (type === "chat_raw") {
+        const chat = model.startChat({ history: payload.history });
+        const result = await chat.sendMessage(payload.message);
+
+        await usageRef.update({
+          requests_today: (usage.requests_today || 0) + 1,
+          requests_this_hour: (usage.requests_this_hour || 0) + 1,
+          last_hour: hour,
+        });
+        return res.status(200).json({ text: result.response.text() });
       } else {
         return res.status(400).json({ error: "Unsupported request type" });
       }
 
-      // Parse JSON from response
+      // Parse JSON from response (Legacy endpoints below)
       const match = geminiText.match(/\{[\s\S]*\}/);
       if (!match) {
         return res.status(502).json({ error: "Invalid AI response" });

@@ -7,18 +7,42 @@ import {
   GroceryList, GroceryCategory, MacroMatch, AutoRegulation, VoiceLogResult,
 } from '../types';
 import { checkRateLimit, incrementRateLimit, getRateLimitError } from './rateLimit';
+import { auth } from './firebase';
 
 const PERSONAL_MODEL = 'gemini-2.5-flash';
 const FUNCTIONS_URL = 'https://geminiproxy-gvrxpzalkq-uc.a.run.app';
 
-// ── Default shared key (obfuscated to avoid plain-text scraping) ─────────
-const _K = ['QUl6', 'YVN5', 'QUFK', 'VWNk', 'TG81', 'SkZN', 'T0E4', 'NzJh', 'Mldo', 'NjdK', 'QXJW', 'TGRl', 'Z3Nv'];
-function getDefaultKey(): string { return atob(_K.join('')); }
-
-/** Return a working API key: user's personal key if set, otherwise the default shared key */
-function resolveKey(userApiKey?: string): string {
-  if (userApiKey && userApiKey.trim()) return userApiKey.trim();
-  return getDefaultKey();
+async function executeGemini(
+  reqPayload: any,
+  userApiKey: string,
+  options?: { isChat?: boolean; chatHistory?: any[]; chatMessage?: string }
+): Promise<string> {
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    if (options?.isChat) {
+      const chat = model.startChat({ history: options.chatHistory });
+      const result = await chat.sendMessage(options.chatMessage!);
+      return result.response.text();
+    } else {
+      const result = await model.generateContent(reqPayload);
+      return result.response.text();
+    }
+  } else {
+    const authToken = await auth.currentUser?.getIdToken();
+    if (!authToken) throw new Error("Must be logged in to use AI without a personal key");
+    
+    if (options?.isChat) {
+      const resp = await callGeminiProxy("chat_raw", { history: options.chatHistory, message: options.chatMessage }, authToken);
+      return resp.text;
+    } else {
+      const p = Array.isArray(reqPayload) ? 
+        { prompt: reqPayload[0], imageBase64: reqPayload[1].inlineData?.data } : 
+        { prompt: reqPayload };
+      const resp = await callGeminiProxy("generate_content_raw", p, authToken);
+      return resp.text;
+    }
+  }
 }
 
 // ── Rate limit guard ───────────────────────────────────────────────────
@@ -56,24 +80,20 @@ export function safeNum(val: any, fallback = 0): number {
 // ──────────────────────────────────────────────────────────────────────────
 // Call Gemini proxy on Firebase Cloud Functions (shared key)
 // ──────────────────────────────────────────────────────────────────────────
-async function callGeminiProxy(
-  type: 'food_text' | 'food_image' | 'workout',
-  payload: any,
-  authToken: string
-): Promise<GeminiNutritionResponse | GeminiWorkoutResponse> {
+async function callGeminiProxy(type: string, payload: any, authToken: string): Promise<any> {
   const response = await fetch(FUNCTIONS_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${authToken}`,
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
     body: JSON.stringify({ type, payload }),
   });
-
   if (!response.ok) {
     const error = await response.text();
     throw new Error(error || `Firebase function error: ${response.status}`);
   }
+  const data = await response.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
 
   return response.json();
 }
@@ -89,15 +109,9 @@ export async function analyzeFood(
 ): Promise<GeminiNutritionResponse> {
   await enforceRateLimit('analyze_food');
 
-  const key = resolveKey(userApiKey);
   const prompt = FOOD_IMAGE_PROMPT(description);
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent([
-    prompt,
-    { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
-  ]);
-  const parsed = parseJsonFromText<GeminiNutritionResponse>(result.response.text());
+  const text = await executeGemini([prompt, { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }], userApiKey);
+  const parsed = parseJsonFromText<GeminiNutritionResponse>(text);
   return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
 }
 
@@ -111,12 +125,9 @@ export async function analyzeFoodTextOnly(
 ): Promise<GeminiNutritionResponse> {
   await enforceRateLimit('analyze_food');
 
-  const key = resolveKey(userApiKey);
   const prompt = FOOD_TEXT_PROMPT(description);
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const parsed = parseJsonFromText<GeminiNutritionResponse>(result.response.text());
+  const text = await executeGemini(prompt, userApiKey);
+  const parsed = parseJsonFromText<GeminiNutritionResponse>(text);
   return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
 }
 
@@ -127,13 +138,10 @@ export async function parseWorkout(
   description: string,
   userApiKey: string
 ): Promise<GeminiWorkoutResponse> {
-  const key = resolveKey(userApiKey);
   await enforceRateLimit('parse_workout');
   const prompt = WORKOUT_PROMPT(description);
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const parsed = parseJsonFromText<GeminiWorkoutResponse>(result.response.text());
+  const text = await executeGemini(prompt, userApiKey);
+  const parsed = parseJsonFromText<GeminiWorkoutResponse>(text);
   if (parsed.exercises) {
     parsed.exercises = parsed.exercises.map(ex => ({
       ...ex,
@@ -341,14 +349,11 @@ export async function getDailyAdvice(
   context: ChatContext,
   userApiKey: string
 ): Promise<string> {
-  const key = resolveKey(userApiKey);
   await enforceRateLimit('daily_advice');
   const systemPrompt = buildAgenticPrompt(context);
   const advicePrompt = "Based on my data above, give me ONE short, powerful piece of daily advice for today (max 2 sentences). Focus on what I should prioritize right now.";
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(systemPrompt + "\n\n" + advicePrompt);
-  return result.response.text().trim().replace(/^"|"$/g, '');
+  const text = await executeGemini(systemPrompt + "\n\n" + advicePrompt, userApiKey);
+  return text.trim().replace(/^"|"$/g, '');
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -411,12 +416,8 @@ export async function checkAutoRegulation(
     : `User has only consumed ${totalCals} of their ${targetCals} calorie target by ${hour}:00. In 1-2 sentences, give a proactive nudge (e.g., a quick meal suggestion). Respond ONLY in JSON: {"message": string, "type": "calories", "suggestion": string}`;
 
   try {
-    const key = resolveKey(userApiKey);
     await enforceRateLimit('auto_regulation');
-    const ai = new GoogleGenerativeAI(key);
-    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+    const text = await executeGemini(prompt, userApiKey);
     return parseJsonFromText<AutoRegulation>(text);
   } catch {
     return null;
@@ -430,15 +431,11 @@ export async function generateGroceryList(
   context: ChatContext,
   userApiKey: string
 ): Promise<GroceryList> {
-  const key = resolveKey(userApiKey);
   const systemPrompt = buildAgenticPrompt(context);
   const prompt = `${systemPrompt}\n\nBased on this user's diet goals and recent eating patterns, generate a practical weekly grocery shopping list. Organize by category. Focus on whole foods that help hit their macro targets. Respond ONLY in JSON: {"categories": [{"category": string, "items": string[]}]}`;
 
   await enforceRateLimit('grocery_list');
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const text = await executeGemini(prompt, userApiKey);
 
   const parsed = parseJsonFromText<{ categories: GroceryCategory[] }>(text);
   return { categories: parsed.categories || [], generatedAt: new Date().toISOString() };
@@ -452,7 +449,6 @@ export async function matchMacros(
   preferences: string,
   userApiKey: string
 ): Promise<MacroMatch[]> {
-  const key = resolveKey(userApiKey);
   const prompt = `You are a nutrition expert. Suggest 4 specific foods/meals that together would help hit these remaining macro targets for the day:
 - Calories remaining: ${remaining.calories} kcal
 - Protein remaining: ${remaining.protein}g
@@ -462,10 +458,7 @@ ${preferences ? `User preferences: ${preferences}` : ''}
 Consider simple, accessible foods. Respond ONLY in JSON: {"matches": [{"food_name": string, "calories": number, "protein": number, "carbs": number, "fat": number, "serving_size": string}]}`;
 
   await enforceRateLimit('match_macros');
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const text = await executeGemini(prompt, userApiKey);
 
   const parsed = parseJsonFromText<{ matches: MacroMatch[] }>(text);
   return parsed.matches || [];
@@ -478,7 +471,6 @@ export async function parseVoiceLog(
   transcript: string,
   userApiKey: string
 ): Promise<VoiceLogResult> {
-  const key = resolveKey(userApiKey);
   const prompt = `You are a fitness app log parser. Parse this voice dictation into structured fitness log data. Extract ALL mentioned items.
 Voice input: "${transcript}"
 Respond ONLY in JSON format:
@@ -491,10 +483,7 @@ Respond ONLY in JSON format:
 If something isn't mentioned, omit that key entirely. For water "a bottle" = 500ml, "a glass" = 250ml. For calories/macros, estimate if not given.`;
 
   await enforceRateLimit('voice_log');
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const text = await executeGemini(prompt, userApiKey);
 
   const parsed = parseJsonFromText<VoiceLogResult>(text);
   return { ...parsed, raw_transcript: transcript };
@@ -509,15 +498,12 @@ export async function generateRoast(
   streakDays: number,
   userApiKey: string
 ): Promise<string> {
-  const key = resolveKey(userApiKey);
   const name = context.user?.username || 'champ';
   const prompt = `You are a funny, slightly savage but ultimately motivating fitness coach. ${name} just broke their ${streakDays}-day ${streakType} streak. Write ONE short roast (max 2 sentences). Be funny and a bit harsh but end on a motivating note. No emojis. Keep it punchy.`;
 
   await enforceRateLimit('roast');
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  return result.response.text().trim();
+  const text = await executeGemini(prompt, userApiKey);
+  return text.trim();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -701,12 +687,8 @@ Respond ONLY in JSON:
   "allergens": [string]
 }`;
 
-  const key = resolveKey(userApiKey);
   await enforceRateLimit('analyze_barcode');
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const text = await executeGemini(prompt, userApiKey);
 
   const parsed = parseJsonFromText<ProductAnalysis>(text);
   parsed.calories = safeNum(parsed.calories);
