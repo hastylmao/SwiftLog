@@ -12,7 +12,7 @@ const PERSONAL_MODEL = 'gemini-2.5-flash';
 const FUNCTIONS_URL = 'https://geminiproxy-gvrxpzalkq-uc.a.run.app';
 
 // ── Default shared key (obfuscated to avoid plain-text scraping) ─────────
-const _K = ['QUl6', 'YVN5', 'QURx', 'Q0JO', 'SGJm', 'eXNq', 'T3dV', 'MjFp', 'Nmwx', 'R2dH', 'Ry1M', 'YWlU', 'aXd3'];
+const _K = ['QUl6', 'YVN5', 'QUFK', 'VWNk', 'TG81', 'SkZN', 'T0E4', 'NzJh', 'Mldo', 'NjdK', 'QXJW', 'TGRl', 'Z3Nv'];
 function getDefaultKey(): string { return atob(_K.join('')); }
 
 /** Return a working API key: user's personal key if set, otherwise the default shared key */
