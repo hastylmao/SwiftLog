@@ -126,8 +126,12 @@ export default function AIChatScreen({ navigation }: any) {
 
       // Get Firebase auth token for shared key usage
       let authToken: string | undefined;
-      if (!settings?.gemini_api_key && auth.currentUser) {
-        authToken = await auth.currentUser.getIdToken();
+      try {
+        if (!settings?.gemini_api_key && auth.currentUser) {
+          authToken = await auth.currentUser.getIdToken(true); // force refresh
+        }
+      } catch (tokenErr) {
+        console.warn('[AIChat] Failed to get auth token:', tokenErr);
       }
 
       const response = await chatWithAI(text, history, chatContext, settings?.gemini_api_key || '', authToken);

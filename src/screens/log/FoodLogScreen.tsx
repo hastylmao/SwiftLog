@@ -170,8 +170,12 @@ export default function FoodLogScreen({ route, navigation }: any) {
     try {
       // Get Firebase auth token for shared key usage
       let authToken: string | undefined;
-      if (!apiKey && auth.currentUser) {
-        authToken = await auth.currentUser.getIdToken();
+      try {
+        if (!apiKey && auth.currentUser) {
+          authToken = await auth.currentUser.getIdToken(true); // force refresh
+        }
+      } catch (tokenErr) {
+        console.warn('[FoodLog] Failed to get auth token:', tokenErr);
       }
 
       let result;
