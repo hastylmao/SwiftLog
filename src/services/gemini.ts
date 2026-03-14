@@ -7,43 +7,9 @@ import {
   GroceryList, GroceryCategory, MacroMatch, AutoRegulation, VoiceLogResult,
 } from '../types';
 import { checkRateLimit, incrementRateLimit, getRateLimitError } from './rateLimit';
-import { auth } from './firebase';
 
 const PERSONAL_MODEL = 'gemini-2.5-flash';
 const FUNCTIONS_URL = 'https://geminiproxy-gvrxpzalkq-uc.a.run.app';
-
-async function executeGemini(
-  reqPayload: any,
-  userApiKey: string,
-  options?: { isChat?: boolean; chatHistory?: any[]; chatMessage?: string }
-): Promise<string> {
-  if (userApiKey) {
-    const ai = new GoogleGenerativeAI(userApiKey);
-    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-    if (options?.isChat) {
-      const chat = model.startChat({ history: options.chatHistory });
-      const result = await chat.sendMessage(options.chatMessage!);
-      return result.response.text();
-    } else {
-      const result = await model.generateContent(reqPayload);
-      return result.response.text();
-    }
-  } else {
-    const authToken = await auth.currentUser?.getIdToken();
-    if (!authToken) throw new Error("Must be logged in to use AI without a personal key");
-
-    if (options?.isChat) {
-      const resp = await callGeminiProxy("chat_raw", { history: options.chatHistory, message: options.chatMessage }, authToken);
-      return resp.text;
-    } else {
-      const p = Array.isArray(reqPayload) ?
-        { prompt: reqPayload[0], imageBase64: reqPayload[1].inlineData?.data } :
-        { prompt: reqPayload };
-      const resp = await callGeminiProxy("generate_content_raw", p, authToken);
-      return resp.text;
-    }
-  }
-}
 
 // ── Rate limit guard ───────────────────────────────────────────────────
 async function enforceRateLimit(feature: string): Promise<void> {
@@ -80,19 +46,26 @@ export function safeNum(val: any, fallback = 0): number {
 // ──────────────────────────────────────────────────────────────────────────
 // Call Gemini proxy on Firebase Cloud Functions (shared key)
 // ──────────────────────────────────────────────────────────────────────────
-async function callGeminiProxy(type: string, payload: any, authToken: string): Promise<any> {
+async function callGeminiProxy(
+  type: 'food_text' | 'food_image' | 'workout',
+  payload: any,
+  authToken: string
+): Promise<GeminiNutritionResponse | GeminiWorkoutResponse> {
   const response = await fetch(FUNCTIONS_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${authToken}`,
+    },
     body: JSON.stringify({ type, payload }),
   });
+
   if (!response.ok) {
     const error = await response.text();
     throw new Error(error || `Firebase function error: ${response.status}`);
   }
-  const data = await response.json();
-  if (data.error) throw new Error(data.error);
-  return data;
+
+  return response.json();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -106,10 +79,30 @@ export async function analyzeFood(
 ): Promise<GeminiNutritionResponse> {
   await enforceRateLimit('analyze_food');
 
-  const prompt = FOOD_IMAGE_PROMPT(description);
-  const text = await executeGemini([prompt, { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }], userApiKey);
-  const parsed = parseJsonFromText<GeminiNutritionResponse>(text);
-  return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
+  if (userApiKey) {
+    // Use personal key
+    const prompt = FOOD_IMAGE_PROMPT(description);
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+    ]);
+    const parsed = parseJsonFromText<GeminiNutritionResponse>(result.response.text());
+    return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
+  } else if (authToken) {
+    // Use shared key via proxy
+    const parsed = await callGeminiProxy('food_image', { imageBase64, description }, authToken);
+    return {
+      ...parsed,
+      calories: safeNum((parsed as any).calories),
+      protein: safeNum((parsed as any).protein),
+      carbs: safeNum((parsed as any).carbs),
+      fat: safeNum((parsed as any).fat),
+    };
+  } else {
+    throw new Error('Gemini API key required. Add it in Settings.');
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -122,10 +115,27 @@ export async function analyzeFoodTextOnly(
 ): Promise<GeminiNutritionResponse> {
   await enforceRateLimit('analyze_food');
 
-  const prompt = FOOD_TEXT_PROMPT(description);
-  const text = await executeGemini(prompt, userApiKey);
-  const parsed = parseJsonFromText<GeminiNutritionResponse>(text);
-  return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
+  if (userApiKey) {
+    // Use personal key
+    const prompt = FOOD_TEXT_PROMPT(description);
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const result = await model.generateContent(prompt);
+    const parsed = parseJsonFromText<GeminiNutritionResponse>(result.response.text());
+    return { ...parsed, calories: safeNum(parsed.calories), protein: safeNum(parsed.protein), carbs: safeNum(parsed.carbs), fat: safeNum(parsed.fat) };
+  } else if (authToken) {
+    // Use shared key via proxy
+    const parsed = await callGeminiProxy('food_text', { description }, authToken);
+    return {
+      ...parsed,
+      calories: safeNum((parsed as any).calories),
+      protein: safeNum((parsed as any).protein),
+      carbs: safeNum((parsed as any).carbs),
+      fat: safeNum((parsed as any).fat),
+    };
+  } else {
+    throw new Error('Gemini API key required. Add it in Settings.');
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -135,10 +145,13 @@ export async function parseWorkout(
   description: string,
   userApiKey: string
 ): Promise<GeminiWorkoutResponse> {
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('parse_workout');
   const prompt = WORKOUT_PROMPT(description);
-  const text = await executeGemini(prompt, userApiKey);
-  const parsed = parseJsonFromText<GeminiWorkoutResponse>(text);
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(prompt);
+  const parsed = parseJsonFromText<GeminiWorkoutResponse>(result.response.text());
   if (parsed.exercises) {
     parsed.exercises = parsed.exercises.map(ex => ({
       ...ex,
@@ -346,11 +359,14 @@ export async function getDailyAdvice(
   context: ChatContext,
   userApiKey: string
 ): Promise<string> {
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('daily_advice');
   const systemPrompt = buildAgenticPrompt(context);
   const advicePrompt = "Based on my data above, give me ONE short, powerful piece of daily advice for today (max 2 sentences). Focus on what I should prioritize right now.";
-  const text = await executeGemini(systemPrompt + "\n\n" + advicePrompt, userApiKey);
-  return text.trim().replace(/^"|"$/g, '');
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(systemPrompt + "\n\n" + advicePrompt);
+  return result.response.text().trim().replace(/^"|"$/g, '');
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -360,16 +376,33 @@ export async function chatWithAI(
   message: string,
   history: ChatHistoryItem[],
   context: ChatContext,
-  userApiKey: string
+  userApiKey: string,
+  authToken?: string
 ): Promise<string> {
+  if (!userApiKey && !authToken) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('chat');
   const systemPrompt = buildAgenticPrompt(context);
-  const formattedHistory = [
-    { role: 'user', parts: [{ text: systemPrompt }] },
-    { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
-    ...history,
-  ];
-  return executeGemini(null, userApiKey, { isChat: true, chatHistory: formattedHistory, chatMessage: message });
+  
+  if (userApiKey) {
+    // Use personal key
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const chat = model.startChat({
+      history: [
+        { role: 'user', parts: [{ text: systemPrompt }] },
+        { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
+        ...history,
+      ],
+    });
+    const result = await chat.sendMessage(message);
+    return result.response.text();
+  } else if (authToken) {
+    // Use shared key via proxy
+    const response = await callGeminiProxy('chat', { message, systemPrompt, history }, authToken);
+    return (response as any).text || 'Unable to generate response';
+  }
+  
+  throw new Error('No API key available');
 }
 
 // Legacy export (used by initGemini callers if any)
@@ -407,8 +440,12 @@ export async function checkAutoRegulation(
     : `User has only consumed ${totalCals} of their ${targetCals} calorie target by ${hour}:00. In 1-2 sentences, give a proactive nudge (e.g., a quick meal suggestion). Respond ONLY in JSON: {"message": string, "type": "calories", "suggestion": string}`;
 
   try {
+    if (!userApiKey) return null;
     await enforceRateLimit('auto_regulation');
-    const text = await executeGemini(prompt, userApiKey);
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
     return parseJsonFromText<AutoRegulation>(text);
   } catch {
     return null;
@@ -425,8 +462,12 @@ export async function generateGroceryList(
   const systemPrompt = buildAgenticPrompt(context);
   const prompt = `${systemPrompt}\n\nBased on this user's diet goals and recent eating patterns, generate a practical weekly grocery shopping list. Organize by category. Focus on whole foods that help hit their macro targets. Respond ONLY in JSON: {"categories": [{"category": string, "items": string[]}]}`;
 
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('grocery_list');
-  const text = await executeGemini(prompt, userApiKey);
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
 
   const parsed = parseJsonFromText<{ categories: GroceryCategory[] }>(text);
   return { categories: parsed.categories || [], generatedAt: new Date().toISOString() };
@@ -448,8 +489,12 @@ export async function matchMacros(
 ${preferences ? `User preferences: ${preferences}` : ''}
 Consider simple, accessible foods. Respond ONLY in JSON: {"matches": [{"food_name": string, "calories": number, "protein": number, "carbs": number, "fat": number, "serving_size": string}]}`;
 
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('match_macros');
-  const text = await executeGemini(prompt, userApiKey);
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
 
   const parsed = parseJsonFromText<{ matches: MacroMatch[] }>(text);
   return parsed.matches || [];
@@ -473,8 +518,12 @@ Respond ONLY in JSON format:
 }
 If something isn't mentioned, omit that key entirely. For water "a bottle" = 500ml, "a glass" = 250ml. For calories/macros, estimate if not given.`;
 
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('voice_log');
-  const text = await executeGemini(prompt, userApiKey);
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
 
   const parsed = parseJsonFromText<VoiceLogResult>(text);
   return { ...parsed, raw_transcript: transcript };
@@ -492,9 +541,12 @@ export async function generateRoast(
   const name = context.user?.username || 'champ';
   const prompt = `You are a funny, slightly savage but ultimately motivating fitness coach. ${name} just broke their ${streakDays}-day ${streakType} streak. Write ONE short roast (max 2 sentences). Be funny and a bit harsh but end on a motivating note. No emojis. Keep it punchy.`;
 
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('roast');
-  const text = await executeGemini(prompt, userApiKey);
-  return text.trim();
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(prompt);
+  return result.response.text().trim();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -539,7 +591,7 @@ export async function analyzeProductBarcode(
         offProduct = offData.product;
       }
     }
-  } catch { }
+  } catch {}
 
   if (offProduct) {
     // We have real data — build result directly from Open Food Facts (FAST path)
@@ -614,7 +666,7 @@ export async function analyzeProductBarcode(
     const reasoning = concerns.length > 0
       ? concerns.slice(0, 3).join('. ') + '.'
       : protein > 10 ? 'Good protein content with reasonable macros.'
-        : 'Moderate nutritional profile.';
+      : 'Moderate nutritional profile.';
 
     return {
       product_name: offProduct.product_name || offProduct.product_name_en || 'Unknown',
@@ -678,8 +730,12 @@ Respond ONLY in JSON:
   "allergens": [string]
 }`;
 
+  if (!userApiKey) throw new Error('Gemini API key required. Add it in Settings.');
   await enforceRateLimit('analyze_barcode');
-  const text = await executeGemini(prompt, userApiKey);
+  const ai = new GoogleGenerativeAI(userApiKey);
+  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
 
   const parsed = parseJsonFromText<ProductAnalysis>(text);
   parsed.calories = safeNum(parsed.calories);

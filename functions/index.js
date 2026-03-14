@@ -13,7 +13,7 @@ initializeApp();
  * Requires Firebase authentication & enforces per-user rate limits.
  */
 exports.geminiProxy = https.onRequest(
-  { cors: true, invoker: "public", region: "us-central1" },
+  { cors: ["http://localhost:3000", "http://localhost:8081", "https://swift-log-gamma.vercel.app"], region: "us-central1" },
   async (req, res) => {
     try {
       // ── 1. Authenticate user ────────────────────────────────────────────
@@ -92,40 +92,33 @@ exports.geminiProxy = https.onRequest(
           { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
         ]);
         geminiText = result.response.text();
-      } else if (type === "generate_content_raw") {
-        const reqPayload = payload.imageBase64 ? [
-          payload.prompt,
-          { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } }
-        ] : payload.prompt;
-        const result = await model.generateContent(reqPayload);
-
-        await usageRef.update({
-          requests_today: (usage.requests_today || 0) + 1,
-          requests_this_hour: (usage.requests_this_hour || 0) + 1,
-          last_hour: hour,
+      } else if (type === "chat") {
+        // Chat mode: Build system prompt + history
+        const { message, systemPrompt, history } = payload;
+        const chat = model.startChat({
+          history: [
+            { role: 'user', parts: [{ text: systemPrompt }] },
+            { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
+            ...history,
+          ],
         });
-        return res.status(200).json({ text: result.response.text() });
-      } else if (type === "chat_raw") {
-        const chat = model.startChat({ history: payload.history });
-        const result = await chat.sendMessage(payload.message);
-
-        await usageRef.update({
-          requests_today: (usage.requests_today || 0) + 1,
-          requests_this_hour: (usage.requests_this_hour || 0) + 1,
-          last_hour: hour,
-        });
-        return res.status(200).json({ text: result.response.text() });
+        const result = await chat.sendMessage(message);
+        geminiText = result.response.text();
       } else {
         return res.status(400).json({ error: "Unsupported request type" });
       }
 
-      // Parse JSON from response (Legacy endpoints below)
-      const match = geminiText.match(/\{[\s\S]*\}/);
-      if (!match) {
-        return res.status(502).json({ error: "Invalid AI response" });
+      // Parse JSON from response (only for food types)
+      let responseData = {};
+      if (type === "chat") {
+        responseData = { text: geminiText };
+      } else {
+        const match = geminiText.match(/\{[\s\S]*\}/);
+        if (!match) {
+          return res.status(502).json({ error: "Invalid AI response" });
+        }
+        responseData = JSON.parse(match[0]);
       }
-
-      const parsed = JSON.parse(match[0]);
 
       // ── 5. Increment usage counters ────────────────────────────────────
       await usageRef.update({
@@ -135,7 +128,7 @@ exports.geminiProxy = https.onRequest(
       });
 
       // ── 6. Return result ───────────────────────────────────────────────
-      return res.status(200).json(parsed);
+      return res.status(200).json(responseData);
     } catch (err) {
       console.error("[geminiProxy] Error:", err);
       return res.status(500).json({ error: "Internal server error" });

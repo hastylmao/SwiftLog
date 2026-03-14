@@ -1,0 +1,17 @@
+
+> swiftlogger@1.0.0 web:build
+> expo export --platform web
+
+Starting Metro Bundler
+
+Static rendering is enabled. Learn more: https://docs.expo.dev/router/web/static-rendering/
+Web Bundling failed 855ms index.ts (964 modules)
+SyntaxError: SyntaxError: C:\Users\aksha\Downloads\RE1\FitTrack\src\services\gemini.ts: 'return' outside of function. (98:2)
+
+[0m [90m  96 |[39m }
+ [90m  97 |[39m
+[31m[1m>[22m[39m[90m  98 |[39m   [36mreturn[39m response[33m.[39mjson()[33m;[39m
+ [90m     |[39m   [31m[1m^[22m[39m
+ [90m  99 |[39m }
+ [90m 100 |[39m
+ [90m 101 |[39m [90m// ──────────────────────────────────────────────────────────────────────────[39m[0m

@@ -17,6 +17,7 @@ import * as Crypto from 'expo-crypto';
 import { theme } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { chatWithAI, ChatContext } from '../../services/gemini';
+import { auth } from '../../services/firebase';
 import { ChatMessage } from '../../types';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 
@@ -123,7 +124,13 @@ export default function AIChatScreen({ navigation }: any) {
         todaySleepLogs,
       };
 
-      const response = await chatWithAI(text, history, chatContext, settings?.gemini_api_key || '');
+      // Get Firebase auth token for shared key usage
+      let authToken: string | undefined;
+      if (!settings?.gemini_api_key && auth.currentUser) {
+        authToken = await auth.currentUser.getIdToken();
+      }
+
+      const response = await chatWithAI(text, history, chatContext, settings?.gemini_api_key || '', authToken);
       const aiMsg: ChatMessage = {
         id: Crypto.randomUUID(),
         role: 'model',
