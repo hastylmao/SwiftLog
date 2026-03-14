@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Swift Logger",
+    "slug": "SwiftLogger",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D0D0D"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.swiftlogger.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0D0D0D",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "static",
+      "name": "SwiftLog: AI Fitness Tracking",
+      "shortName": "SwiftLog",
+      "description": "AI fitness tracker for food, workouts, macros, and recovery.",
+      "themeColor": "#0D0D0D",
+      "backgroundColor": "#0D0D0D",
+      "display": "standalone"
+    },
+    "plugins": [
+      "expo-sharing",
+      "expo-speech-recognition",
+      "expo-router"
+    ]
+  }
+}

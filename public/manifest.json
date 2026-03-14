@@ -1,0 +1,25 @@
+{
+  "name": "SwiftLog: AI Fitness Tracking",
+  "short_name": "SwiftLog",
+  "description": "AI fitness tracker for food, workouts, macros, and recovery.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0D0D0D",
+  "theme_color": "#0D0D0D",
+  "icons": [
+    {
+      "src": "/assets/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/android-icon-monochrome.png",
+      "sizes": "432x432",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
