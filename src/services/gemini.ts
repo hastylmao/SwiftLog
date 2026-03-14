@@ -607,6 +607,7 @@ export async function generateRoast(
 export interface ProductAnalysis {
   product_name: string;
   brand: string;
+  source?: 'database' | 'ai_estimate';
   serving_size: string;
   product_weight_g: number;  // total pack weight in grams (0 if unknown)
   calories: number;
@@ -732,6 +733,7 @@ export async function analyzeProductBarcode(
       : 'Moderate nutritional profile.';
 
     const result = {
+      source: 'database' as const,
       product_name: offProduct.product_name || offProduct.product_name_en || 'Unknown',
       brand: offProduct.brands || 'Unknown',
       serving_size: offProduct.serving_size || offProduct.quantity || 'per 100g',
@@ -756,5 +758,82 @@ export async function analyzeProductBarcode(
     return result;
   }
 
-  throw new Error('Product not found in the verified nutrition database. Try scanning the barcode again or log it manually.');
+  // No verified database match — fall back to a clearly labeled AI estimate.
+  onStageChange?.('Database miss. Building an estimated match...');
+  const prompt = `You are estimating nutrition for a packaged food barcode that was NOT found in the verified product database.
+
+Barcode type: ${barcodeType}
+Barcode data: ${normalizedBarcode || barcodeData}
+
+Rules:
+1. Never pretend you know the exact product unless you are highly confident from the barcode pattern alone.
+2. If confidence is not high, set:
+   - "product_name" to "Unverified Product Estimate"
+   - "brand" to "Unknown"
+3. Always mention in "health_reasoning" that this is an AI estimate and not a verified barcode match.
+4. Be conservative. It is better to return a generic estimate than invent a precise wrong brand or flavor.
+5. Keep the same barcode response stable and deterministic.
+
+Respond ONLY in JSON:
+{
+  "product_name": string,
+  "brand": string,
+  "serving_size": string,
+  "product_weight_g": number,
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "sugar": number,
+  "fiber": number,
+  "sodium_mg": number,
+  "saturated_fat": number,
+  "trans_fat": number,
+  "cholesterol_mg": number,
+  "ingredients_concern": [string],
+  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string,
+  "additives": [string],
+  "allergens": [string]
+}`;
+
+  await enforceRateLimit('analyze_barcode');
+  let parsed: ProductAnalysis;
+
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({
+      model: PERSONAL_MODEL,
+      generationConfig: { temperature: 0, topP: 0.1, topK: 1 },
+    });
+    const result = await model.generateContent(prompt);
+    parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
+  } else if (authToken) {
+    parsed = await callGeminiProxy<ProductAnalysis>('barcode', { barcodeData: normalizedBarcode || barcodeData, barcodeType }, authToken);
+  } else {
+    throw new Error('Gemini API key required. Add it in Settings.');
+  }
+
+  parsed.calories = safeNum(parsed.calories);
+  parsed.protein = safeNum(parsed.protein);
+  parsed.carbs = safeNum(parsed.carbs);
+  parsed.fat = safeNum(parsed.fat);
+  parsed.sugar = safeNum(parsed.sugar);
+  parsed.fiber = safeNum(parsed.fiber);
+  parsed.saturated_fat = safeNum(parsed.saturated_fat);
+  parsed.trans_fat = safeNum(parsed.trans_fat);
+  parsed.sodium_mg = safeNum(parsed.sodium_mg);
+  parsed.cholesterol_mg = safeNum(parsed.cholesterol_mg);
+  parsed.ingredients_concern = Array.isArray(parsed.ingredients_concern) ? parsed.ingredients_concern : [];
+  parsed.additives = Array.isArray(parsed.additives) ? parsed.additives : [];
+  parsed.allergens = Array.isArray(parsed.allergens) ? parsed.allergens : [];
+  parsed.product_weight_g = safeNum(parsed.product_weight_g);
+  parsed.source = 'ai_estimate';
+  parsed.product_name = parsed.product_name?.trim() || 'Unverified Product Estimate';
+  parsed.brand = parsed.brand?.trim() || 'Unknown';
+  parsed.health_reasoning = parsed.health_reasoning?.includes('estimate')
+    ? parsed.health_reasoning
+    : `AI estimate only, not a verified barcode match. ${parsed.health_reasoning || ''}`.trim();
+  BARCODE_RESULT_CACHE.set(cacheKey, parsed);
+  return parsed;
 }

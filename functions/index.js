@@ -134,14 +134,19 @@ exports.geminiProxy = https.onRequest(
           const result = await chat.sendMessage(message);
           geminiText = result.response.text();
         } else if (type === "barcode") {
-          const prompt = `You are a food product nutrition expert. A retail barcode lookup missed, so estimate the product nutrition from the barcode.
+          const prompt = `You are estimating nutrition for a packaged food barcode that was NOT found in the verified product database.
 
 Barcode type: ${payload.barcodeType}
 Barcode data: ${payload.barcodeData}
 
-Try to identify the likely product from the barcode number. Common barcode prefixes: 890 India, 0-09 USA/Canada, 30-37 France, 400-440 Germany, 45-49 Japan, 50 UK, 87 Netherlands, 880 South Korea.
-
-If you can identify the product, provide accurate nutritional data. If not, set product_name to "Unknown Product - try scanning again".
+Rules:
+1. Never pretend you know the exact product unless you are highly confident from the barcode pattern alone.
+2. If confidence is not high, set:
+   - "product_name" to "Unverified Product Estimate"
+   - "brand" to "Unknown"
+3. Always mention in "health_reasoning" that this is an AI estimate and not a verified barcode match.
+4. Be conservative. It is better to return a generic estimate than invent a precise wrong brand or flavor.
+5. Keep the same barcode response stable and deterministic.
 
 Respond ONLY in JSON:
 {
@@ -165,7 +170,11 @@ Respond ONLY in JSON:
   "additives": [string],
   "allergens": [string]
 }`;
-          const result = await model.generateContent(prompt);
+          const barcodeModel = ai.getGenerativeModel({
+            model: "gemini-2.5-flash",
+            generationConfig: { temperature: 0, topP: 0.1, topK: 1 },
+          });
+          const result = await barcodeModel.generateContent(prompt);
           geminiText = result.response.text();
         } else {
           return res.status(400).json({ error: "Unsupported request type" });

@@ -225,6 +225,12 @@ function ProductResult({ product, onScanAgain, logFood }: {
     <>
       {/* Header */}
       <Animated.View entering={FadeInDown.delay(100).duration(400)} style={styles.productHeader}>
+        {product.source === 'ai_estimate' && (
+          <View style={styles.estimatePill}>
+            <Ionicons name="sparkles-outline" size={14} color="#FACC15" />
+            <Text style={styles.estimatePillText}>AI estimate, not a verified barcode match</Text>
+          </View>
+        )}
         <View style={[styles.healthBadge, { backgroundColor: health.bg, borderColor: health.color + '40' }]}>
           <Ionicons name={health.icon as any} size={20} color={health.color} />
           <Text style={[styles.healthLabel, { color: health.color }]}>{health.label}</Text>
@@ -493,6 +499,19 @@ const styles = StyleSheet.create({
   errorWrap: { alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
   errorText: { color: 'rgba(255,255,255,0.6)', fontSize: 15, textAlign: 'center', marginTop: 14, marginBottom: 24 },
   productHeader: { alignItems: 'center', marginBottom: 20 },
+  estimatePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(250,204,21,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(250,204,21,0.25)',
+    marginBottom: 14,
+  },
+  estimatePillText: { color: '#FACC15', fontSize: 12, fontWeight: '700' },
   healthBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 18, paddingVertical: 10, borderRadius: 999,
