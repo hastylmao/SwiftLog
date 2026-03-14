@@ -31,13 +31,13 @@ async function executeGemini(
   } else {
     const authToken = await auth.currentUser?.getIdToken();
     if (!authToken) throw new Error("Must be logged in to use AI without a personal key");
-    
+
     if (options?.isChat) {
       const resp = await callGeminiProxy("chat_raw", { history: options.chatHistory, message: options.chatMessage }, authToken);
       return resp.text;
     } else {
-      const p = Array.isArray(reqPayload) ? 
-        { prompt: reqPayload[0], imageBase64: reqPayload[1].inlineData?.data } : 
+      const p = Array.isArray(reqPayload) ?
+        { prompt: reqPayload[0], imageBase64: reqPayload[1].inlineData?.data } :
         { prompt: reqPayload };
       const resp = await callGeminiProxy("generate_content_raw", p, authToken);
       return resp.text;
@@ -93,9 +93,6 @@ async function callGeminiProxy(type: string, payload: any, authToken: string): P
   const data = await response.json();
   if (data.error) throw new Error(data.error);
   return data;
-}
-
-  return response.json();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -365,20 +362,14 @@ export async function chatWithAI(
   context: ChatContext,
   userApiKey: string
 ): Promise<string> {
-  const key = resolveKey(userApiKey);
   await enforceRateLimit('chat');
   const systemPrompt = buildAgenticPrompt(context);
-  const ai = new GoogleGenerativeAI(key);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const chat = model.startChat({
-    history: [
-      { role: 'user', parts: [{ text: systemPrompt }] },
-      { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
-      ...history,
-    ],
-  });
-  const result = await chat.sendMessage(message);
-  return result.response.text();
+  const formattedHistory = [
+    { role: 'user', parts: [{ text: systemPrompt }] },
+    { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
+    ...history,
+  ];
+  return executeGemini(null, userApiKey, { isChat: true, chatHistory: formattedHistory, chatMessage: message });
 }
 
 // Legacy export (used by initGemini callers if any)
