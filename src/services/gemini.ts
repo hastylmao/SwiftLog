@@ -64,7 +64,7 @@ export function safeNum(val: any, fallback = 0): number {
 // Call Gemini proxy on Firebase Cloud Functions (shared key)
 // ──────────────────────────────────────────────────────────────────────────
 async function callGeminiProxy<T>(
-  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'chat',
+  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'nutrition_label' | 'chat',
   payload: any,
   authToken: string
 ): Promise<T> {
@@ -607,7 +607,7 @@ export async function generateRoast(
 export interface ProductAnalysis {
   product_name: string;
   brand: string;
-  source?: 'database' | 'ai_estimate';
+  source?: 'database' | 'ai_estimate' | 'nutrition_label';
   serving_size: string;
   product_weight_g: number;  // total pack weight in grams (0 if unknown)
   calories: number;
@@ -625,6 +625,95 @@ export interface ProductAnalysis {
   health_reasoning: string;
   additives: string[];
   allergens: string[];
+}
+
+function normalizeProductAnalysis(parsed: ProductAnalysis, source: ProductAnalysis['source']): ProductAnalysis {
+  parsed.calories = safeNum(parsed.calories);
+  parsed.protein = safeNum(parsed.protein);
+  parsed.carbs = safeNum(parsed.carbs);
+  parsed.fat = safeNum(parsed.fat);
+  parsed.sugar = safeNum(parsed.sugar);
+  parsed.fiber = safeNum(parsed.fiber);
+  parsed.saturated_fat = safeNum(parsed.saturated_fat);
+  parsed.trans_fat = safeNum(parsed.trans_fat);
+  parsed.sodium_mg = safeNum(parsed.sodium_mg);
+  parsed.cholesterol_mg = safeNum(parsed.cholesterol_mg);
+  parsed.product_weight_g = safeNum(parsed.product_weight_g);
+  parsed.ingredients_concern = Array.isArray(parsed.ingredients_concern) ? parsed.ingredients_concern : [];
+  parsed.additives = Array.isArray(parsed.additives) ? parsed.additives : [];
+  parsed.allergens = Array.isArray(parsed.allergens) ? parsed.allergens : [];
+  parsed.source = source;
+  parsed.product_name = parsed.product_name?.trim() || 'Unknown Product';
+  parsed.brand = parsed.brand?.trim() || 'Unknown';
+  parsed.serving_size = parsed.serving_size?.trim() || 'per serving';
+  parsed.health_reasoning = parsed.health_reasoning?.trim() || 'Estimated from the available package information.';
+  return parsed;
+}
+
+export async function analyzeNutritionLabelImage(
+  imageBase64: string,
+  userApiKey: string,
+  authToken?: string,
+  onStageChange?: (message: string) => void
+): Promise<ProductAnalysis> {
+  onStageChange?.('Reading nutrition label...');
+
+  const prompt = `You are reading a packaged food nutrition label from an image.
+
+Your job:
+1. Read the nutrition table and any visible product/brand text from the package.
+2. Return the nutrition data as accurately as possible from what is visible.
+3. If the label is partially unreadable, make conservative estimates and say so in health_reasoning.
+4. Prefer the nutrition facts panel over front-of-pack marketing claims.
+5. If product name or brand is not visible, use "Unknown".
+6. If total pack weight is not visible, set "product_weight_g" to 0.
+7. Use the visible serving basis exactly when possible (for example "per 70g serving", "per pack", or "per 100g").
+8. Mention clearly in health_reasoning that this was read from a nutrition-label photo.
+
+Respond ONLY in JSON:
+{
+  "product_name": string,
+  "brand": string,
+  "serving_size": string,
+  "product_weight_g": number,
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "sugar": number,
+  "fiber": number,
+  "sodium_mg": number,
+  "saturated_fat": number,
+  "trans_fat": number,
+  "cholesterol_mg": number,
+  "ingredients_concern": [string],
+  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string,
+  "additives": [string],
+  "allergens": [string]
+}`;
+
+  await enforceRateLimit('analyze_barcode');
+  let parsed: ProductAnalysis;
+
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({
+      model: PERSONAL_MODEL,
+      generationConfig: { temperature: 0, topP: 0.1, topK: 1 },
+    });
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+    ]);
+    parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
+  } else if (authToken) {
+    parsed = await callGeminiProxy<ProductAnalysis>('nutrition_label', { imageBase64 }, authToken);
+  } else {
+    throw new Error('Gemini API key required. Add it in Settings.');
+  }
+
+  return normalizeProductAnalysis(parsed, 'nutrition_label');
 }
 
 export async function analyzeProductBarcode(
@@ -814,21 +903,7 @@ Respond ONLY in JSON:
     throw new Error('Gemini API key required. Add it in Settings.');
   }
 
-  parsed.calories = safeNum(parsed.calories);
-  parsed.protein = safeNum(parsed.protein);
-  parsed.carbs = safeNum(parsed.carbs);
-  parsed.fat = safeNum(parsed.fat);
-  parsed.sugar = safeNum(parsed.sugar);
-  parsed.fiber = safeNum(parsed.fiber);
-  parsed.saturated_fat = safeNum(parsed.saturated_fat);
-  parsed.trans_fat = safeNum(parsed.trans_fat);
-  parsed.sodium_mg = safeNum(parsed.sodium_mg);
-  parsed.cholesterol_mg = safeNum(parsed.cholesterol_mg);
-  parsed.ingredients_concern = Array.isArray(parsed.ingredients_concern) ? parsed.ingredients_concern : [];
-  parsed.additives = Array.isArray(parsed.additives) ? parsed.additives : [];
-  parsed.allergens = Array.isArray(parsed.allergens) ? parsed.allergens : [];
-  parsed.product_weight_g = safeNum(parsed.product_weight_g);
-  parsed.source = 'ai_estimate';
+  normalizeProductAnalysis(parsed, 'ai_estimate');
   parsed.product_name = parsed.product_name?.trim() || 'Unverified Product Estimate';
   parsed.brand = parsed.brand?.trim() || 'Unknown';
   parsed.health_reasoning = parsed.health_reasoning?.includes('estimate')

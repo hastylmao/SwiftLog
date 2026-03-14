@@ -1,8 +1,9 @@
 import React, { useState, useRef, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Dimensions, Alert, TextInput,
+  View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Dimensions, TextInput,
 } from 'react-native';
-import { CameraView, useCameraPermissions, BarcodeScanningResult } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
@@ -10,7 +11,7 @@ import Toast from 'react-native-toast-message';
 
 import { theme } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { analyzeProductBarcode, ProductAnalysis } from '../../services/gemini';
+import { analyzeNutritionLabelImage, ProductAnalysis } from '../../services/gemini';
 import { auth } from '../../services/firebase';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { FoodLog } from '../../types';
@@ -27,119 +28,126 @@ const HEALTH_CONFIG: Record<string, { color: string; bg: string; icon: string; l
 
 export default function ScanScreen() {
   const { settings, logFood } = useApp();
-  const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [loadingStage, setLoadingStage] = useState('Looking up nutrition data');
+  const [loadingStage, setLoadingStage] = useState('Reading nutrition label');
   const [product, setProduct] = useState<ProductAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const lastScanned = useRef<string>('');
+  const lastSource = useRef<'camera' | 'gallery' | ''>('');
 
-  const handleBarcode = useCallback(async (result: BarcodeScanningResult) => {
-    if (scanned || loading) return;
-    if (result.data === lastScanned.current) return;
-    lastScanned.current = result.data;
-    setScanned(true);
-    setLoading(true);
-    setLoadingStage('Checking product database');
-    setError(null);
-    setProduct(null);
+  const getAuthToken = useCallback(async () => {
+    if (!settings?.gemini_api_key && auth.currentUser) {
+      return auth.currentUser.getIdToken();
+    }
+    return undefined;
+  }, [settings?.gemini_api_key]);
+
+  const analyzeNutritionLabel = useCallback(async (source: 'camera' | 'gallery') => {
     try {
-      let authToken: string | undefined;
-      if (!settings?.gemini_api_key && auth.currentUser) {
-        authToken = await auth.currentUser.getIdToken();
+      if (loading) return;
+      let result: ImagePicker.ImagePickerResult;
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Toast.show({ type: 'error', text1: 'Permission needed', text2: 'Camera access is required' });
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          quality: 0.8,
+        });
       }
 
-      const analysis = await analyzeProductBarcode(
-        result.data,
-        result.type,
+      if (result.canceled || !result.assets[0]) {
+        return;
+      }
+
+      const manipulated = await ImageManipulator.manipulateAsync(
+        result.assets[0].uri,
+        [{ resize: { width: 1200 } }],
+        { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+
+      if (!manipulated.base64) {
+        throw new Error('Could not prepare the nutrition label photo.');
+      }
+
+      lastSource.current = source;
+      setScanned(true);
+      setLoading(true);
+      setLoadingStage('Reading nutrition label');
+      setError(null);
+
+      const authToken = await getAuthToken();
+      const analysis = await analyzeNutritionLabelImage(
+        manipulated.base64,
         settings?.gemini_api_key || '',
         authToken,
         setLoadingStage,
       );
       setProduct(analysis);
     } catch (err: any) {
-      setError(err?.message || 'Failed to analyze product. Try scanning again.');
+      setError(err?.message || 'Failed to read nutrition label. Try a clearer photo.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, [scanned, loading, settings?.gemini_api_key]);
+  }, [getAuthToken, loading, settings?.gemini_api_key]);
 
   const resetScan = () => {
     setScanned(false);
     setProduct(null);
     setError(null);
-    lastScanned.current = '';
+    lastSource.current = '';
   };
-
-  if (!permission) {
-    return (
-      <View style={styles.container}>
-        <AnimatedBackground />
-        <View style={styles.centered}>
-          <ActivityIndicator color={theme.colors.accent} size="large" />
-        </View>
-      </View>
-    );
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={styles.container}>
-        <AnimatedBackground />
-        <View style={styles.centered}>
-          <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.3)" />
-          <Text style={styles.permTitle}>Camera Access Needed</Text>
-          <Text style={styles.permSub}>Grant camera permission to scan product barcodes and get instant nutrition info.</Text>
-          <Pressable style={styles.permBtn} onPress={requestPermission}>
-            <LinearGradient colors={['#00E5FF', '#4A90FF']} style={styles.permBtnGrad}>
-              <Text style={styles.permBtnText}>Grant Permission</Text>
-            </LinearGradient>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
 
   return (
     <View style={styles.container}>
+      <AnimatedBackground />
       {!scanned ? (
-        <View style={styles.cameraWrap}>
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] }}
-            onBarcodeScanned={handleBarcode}
-          />
-          {/* Overlay */}
-          <View style={styles.overlay}>
-            <View style={styles.overlayTop}>
-              <Text style={styles.overlayTitle}>Scan Product</Text>
-              <Text style={styles.overlaySub}>Point at the printed retail barcode on the package</Text>
+        <ScrollView contentContainerStyle={styles.entryScroll} showsVerticalScrollIndicator={false}>
+          <Animated.View entering={FadeIn.duration(400)} style={styles.entryHero}>
+            <View style={styles.entryIconWrap}>
+              <LinearGradient colors={['rgba(0,229,255,0.22)', 'rgba(74,144,255,0.12)']} style={styles.entryIconGrad}>
+                <Ionicons name="document-text-outline" size={40} color="#67E8F9" />
+              </LinearGradient>
             </View>
-            <View style={styles.scanFrameWrap}>
-              <View style={styles.scanFrame}>
-                <View style={[styles.corner, styles.cornerTL]} />
-                <View style={[styles.corner, styles.cornerTR]} />
-                <View style={[styles.corner, styles.cornerBL]} />
-                <View style={[styles.corner, styles.cornerBR]} />
-              </View>
+            <Text style={styles.entryTitle}>Scan Nutrition Label</Text>
+            <Text style={styles.entrySub}>
+              Take a clear photo of the nutrition facts panel on the package. This is now the primary scan flow because it is more reliable than barcode lookup for most products.
+            </Text>
+          </Animated.View>
+
+          <Animated.View entering={FadeInDown.delay(120).duration(400)} style={styles.entryCard}>
+            <Pressable style={styles.entryActionBtn} onPress={() => { void analyzeNutritionLabel('camera'); }}>
+              <LinearGradient colors={['#00E5FF', '#4A90FF']} style={styles.entryActionGrad}>
+                <Ionicons name="camera-outline" size={24} color="#081018" />
+                <Text style={styles.entryActionPrimary}>Take Label Photo</Text>
+                <Text style={styles.entryActionSecondary}>Open camera and capture the nutrition panel</Text>
+              </LinearGradient>
+            </Pressable>
+
+            <Pressable style={styles.entryGhostBtn} onPress={() => { void analyzeNutritionLabel('gallery'); }}>
+              <Ionicons name="images-outline" size={20} color="#fff" />
+              <Text style={styles.entryGhostText}>Upload Label From Gallery</Text>
+            </Pressable>
+
+            <View style={styles.tipCard}>
+              <Text style={styles.tipTitle}>Best results</Text>
+              <Text style={styles.tipText}>Fill the frame with the nutrition facts table.</Text>
+              <Text style={styles.tipText}>Keep the serving size and pack weight visible if they are nearby.</Text>
+              <Text style={styles.tipText}>Avoid glare and make sure the numbers are sharp.</Text>
             </View>
-            <View style={styles.overlayBottom}>
-              <View style={styles.hintPill}>
-                <Ionicons name="barcode-outline" size={16} color="#fff" />
-                <Text style={styles.hintText}>EAN and UPC retail barcodes only</Text>
-              </View>
-            </View>
-          </View>
-        </View>
+          </Animated.View>
+        </ScrollView>
       ) : (
         <View style={styles.resultContainer}>
-          <AnimatedBackground />
           <ScrollView contentContainerStyle={styles.resultScroll} showsVerticalScrollIndicator={false}>
             {loading ? (
               <Animated.View entering={FadeIn} style={styles.loadingWrap}>
                 <Ionicons name="sparkles" size={36} color={theme.colors.accent} />
-                <Text style={styles.loadingTitle}>Analyzing product...</Text>
+                <Text style={styles.loadingTitle}>Reading label...</Text>
                 <Text style={styles.loadingSub}>{loadingStage}</Text>
                 <ActivityIndicator color={theme.colors.accent} style={{ marginTop: 16 }} />
               </Animated.View>
@@ -147,13 +155,22 @@ export default function ScanScreen() {
               <Animated.View entering={FadeIn} style={styles.errorWrap}>
                 <Ionicons name="alert-circle-outline" size={44} color="#FF6D00" />
                 <Text style={styles.errorText}>{error}</Text>
+                <Pressable style={styles.labelFallbackBtn} onPress={() => { void analyzeNutritionLabel(lastSource.current || 'camera'); }}>
+                  <Ionicons name="camera-outline" size={18} color="#00E5FF" />
+                  <Text style={styles.labelFallbackText}>Retake Nutrition Label</Text>
+                </Pressable>
                 <Pressable style={styles.scanAgainBtn} onPress={resetScan}>
-                  <Ionicons name="scan-outline" size={18} color="#fff" />
-                  <Text style={styles.scanAgainText}>Scan Again</Text>
+                  <Ionicons name="arrow-back-outline" size={18} color="#fff" />
+                  <Text style={styles.scanAgainText}>Back to Scan Options</Text>
                 </Pressable>
               </Animated.View>
             ) : product ? (
-              <ProductResult product={product} onScanAgain={resetScan} logFood={logFood} />
+              <ProductResult
+                product={product}
+                onScanAgain={resetScan}
+                onUseNutritionLabel={() => { void analyzeNutritionLabel(lastSource.current || 'camera'); }}
+                logFood={logFood}
+              />
             ) : null}
           </ScrollView>
         </View>
@@ -162,9 +179,10 @@ export default function ScanScreen() {
   );
 }
 
-function ProductResult({ product, onScanAgain, logFood }: {
+function ProductResult({ product, onScanAgain, onUseNutritionLabel, logFood }: {
   product: ProductAnalysis;
   onScanAgain: () => void;
+  onUseNutritionLabel: () => void;
   logFood: (food: Omit<FoodLog, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
 }) {
   const health = HEALTH_CONFIG[product.health_rating] || HEALTH_CONFIG.alright;
@@ -231,6 +249,12 @@ function ProductResult({ product, onScanAgain, logFood }: {
             <Text style={styles.estimatePillText}>AI estimate, not a verified barcode match</Text>
           </View>
         )}
+        {product.source === 'nutrition_label' && (
+          <View style={styles.labelReadPill}>
+            <Ionicons name="document-text-outline" size={14} color="#67E8F9" />
+            <Text style={styles.labelReadPillText}>Read from nutrition label photo</Text>
+          </View>
+        )}
         <View style={[styles.healthBadge, { backgroundColor: health.bg, borderColor: health.color + '40' }]}>
           <Ionicons name={health.icon as any} size={20} color={health.color} />
           <Text style={[styles.healthLabel, { color: health.color }]}>{health.label}</Text>
@@ -245,6 +269,22 @@ function ProductResult({ product, onScanAgain, logFood }: {
         <Ionicons name="information-circle" size={18} color={health.color} />
         <Text style={styles.reasonText}>{product.health_reasoning}</Text>
       </Animated.View>
+
+      {product.source === 'ai_estimate' && (
+        <Animated.View entering={FadeInDown.delay(240).duration(400)} style={styles.labelHelpCard}>
+          <View style={styles.labelHelpHeader}>
+            <Ionicons name="camera-outline" size={18} color="#67E8F9" />
+            <Text style={styles.labelHelpTitle}>Want a more accurate result?</Text>
+          </View>
+          <Text style={styles.labelHelpText}>
+            If the barcode database missed this item, snap the nutrition facts panel and we will read the macros directly from the label.
+          </Text>
+          <Pressable style={styles.labelHelpBtn} onPress={onUseNutritionLabel}>
+            <Ionicons name="sparkles-outline" size={16} color="#081018" />
+            <Text style={styles.labelHelpBtnText}>Use Nutrition Label Photo</Text>
+          </Pressable>
+        </Animated.View>
+      )}
 
       {/* Serving size picker */}
       <Animated.View entering={FadeInDown.delay(280).duration(400)} style={styles.servingPickerCard}>
@@ -430,8 +470,8 @@ function ProductResult({ product, onScanAgain, logFood }: {
       {/* Scan again */}
       <Animated.View entering={FadeInDown.delay(700).duration(400)}>
         <Pressable style={styles.scanAgainBtn} onPress={onScanAgain}>
-          <Ionicons name="scan-outline" size={18} color="#fff" />
-          <Text style={styles.scanAgainText}>Scan Another Product</Text>
+          <Ionicons name="camera-outline" size={18} color="#fff" />
+          <Text style={styles.scanAgainText}>Scan Another Label</Text>
         </Pressable>
       </Animated.View>
 
@@ -466,31 +506,63 @@ function NutrientRow({ label, value, warn, good }: { label: string; value: strin
   );
 }
 
-const FRAME_SIZE = SW * 0.65;
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#020408' },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40 },
-  permTitle: { color: '#fff', fontSize: 22, fontWeight: '800', marginTop: 20, textAlign: 'center' },
-  permSub: { color: 'rgba(255,255,255,0.5)', fontSize: 14, textAlign: 'center', marginTop: 10, lineHeight: 22 },
-  permBtn: { marginTop: 24, borderRadius: 16, overflow: 'hidden' },
-  permBtnGrad: { paddingVertical: 14, paddingHorizontal: 32, borderRadius: 16 },
-  permBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  cameraWrap: { flex: 1 },
-  overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between' },
-  overlayTop: { paddingTop: 70, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', paddingBottom: 20 },
-  overlayTitle: { color: '#fff', fontSize: 24, fontWeight: '800' },
-  overlaySub: { color: 'rgba(255,255,255,0.6)', fontSize: 14, marginTop: 4 },
-  scanFrameWrap: { alignItems: 'center', justifyContent: 'center' },
-  scanFrame: { width: FRAME_SIZE, height: FRAME_SIZE, position: 'relative' },
-  corner: { position: 'absolute', width: 30, height: 30, borderColor: '#00E5FF' },
-  cornerTL: { top: 0, left: 0, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 8 },
-  cornerTR: { top: 0, right: 0, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 8 },
-  cornerBL: { bottom: 0, left: 0, borderBottomWidth: 3, borderLeftWidth: 3, borderBottomLeftRadius: 8 },
-  cornerBR: { bottom: 0, right: 0, borderBottomWidth: 3, borderRightWidth: 3, borderBottomRightRadius: 8 },
-  overlayBottom: { alignItems: 'center', paddingBottom: 100, backgroundColor: 'rgba(0,0,0,0.5)', paddingTop: 20 },
-  hintPill: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999 },
-  hintText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  entryScroll: { flexGrow: 1, padding: 20, paddingTop: 72, paddingBottom: 120 },
+  entryHero: { alignItems: 'center', marginBottom: 24 },
+  entryIconWrap: {
+    width: 96,
+    height: 96,
+    borderRadius: 28,
+    overflow: 'hidden',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(103,232,249,0.18)',
+  },
+  entryIconGrad: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  entryTitle: { color: '#fff', fontSize: 30, fontWeight: '900', textAlign: 'center' },
+  entrySub: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 15,
+    textAlign: 'center',
+    lineHeight: 24,
+    marginTop: 10,
+    maxWidth: SW * 0.88,
+  },
+  entryCard: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: 20,
+  },
+  entryActionBtn: { borderRadius: 20, overflow: 'hidden', marginBottom: 12 },
+  entryActionGrad: { alignItems: 'center', justifyContent: 'center', paddingVertical: 20, paddingHorizontal: 18 },
+  entryActionPrimary: { color: '#081018', fontSize: 17, fontWeight: '900', marginTop: 8 },
+  entryActionSecondary: { color: 'rgba(8,16,24,0.72)', fontSize: 13, fontWeight: '600', marginTop: 4, textAlign: 'center' },
+  entryGhostBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    marginBottom: 18,
+  },
+  entryGhostText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  tipCard: {
+    backgroundColor: 'rgba(103,232,249,0.05)',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(103,232,249,0.14)',
+    padding: 16,
+    gap: 8,
+  },
+  tipTitle: { color: '#67E8F9', fontSize: 14, fontWeight: '800' },
+  tipText: { color: 'rgba(255,255,255,0.62)', fontSize: 13, lineHeight: 20 },
   resultContainer: { flex: 1 },
   resultScroll: { padding: 20, paddingTop: 60 },
   loadingWrap: { alignItems: 'center', justifyContent: 'center', paddingTop: 120 },
@@ -498,6 +570,20 @@ const styles = StyleSheet.create({
   loadingSub: { color: 'rgba(255,255,255,0.5)', fontSize: 14, marginTop: 6 },
   errorWrap: { alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
   errorText: { color: 'rgba(255,255,255,0.6)', fontSize: 15, textAlign: 'center', marginTop: 14, marginBottom: 24 },
+  labelFallbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,229,255,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.25)',
+    marginBottom: 12,
+  },
+  labelFallbackText: { color: '#67E8F9', fontSize: 14, fontWeight: '700' },
   productHeader: { alignItems: 'center', marginBottom: 20 },
   estimatePill: {
     flexDirection: 'row',
@@ -512,6 +598,19 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   estimatePillText: { color: '#FACC15', fontSize: 12, fontWeight: '700' },
+  labelReadPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(103,232,249,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(103,232,249,0.25)',
+    marginBottom: 14,
+  },
+  labelReadPillText: { color: '#67E8F9', fontSize: 12, fontWeight: '700' },
   healthBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 18, paddingVertical: 10, borderRadius: 999,
@@ -526,6 +625,27 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, marginBottom: 16,
   },
   reasonText: { flex: 1, color: 'rgba(255,255,255,0.7)', fontSize: 13, lineHeight: 20 },
+  labelHelpCard: {
+    backgroundColor: 'rgba(103,232,249,0.06)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(103,232,249,0.18)',
+    padding: 18,
+    marginBottom: 16,
+  },
+  labelHelpHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  labelHelpTitle: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  labelHelpText: { color: 'rgba(255,255,255,0.65)', fontSize: 13, lineHeight: 20, marginBottom: 14 },
+  labelHelpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#67E8F9',
+    borderRadius: 14,
+    paddingVertical: 13,
+  },
+  labelHelpBtnText: { color: '#081018', fontSize: 13, fontWeight: '800' },
   macroCard: {
     backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 24, borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)', padding: 20, marginBottom: 16,

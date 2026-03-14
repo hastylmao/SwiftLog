@@ -176,6 +176,50 @@ Respond ONLY in JSON:
           });
           const result = await barcodeModel.generateContent(prompt);
           geminiText = result.response.text();
+        } else if (type === "nutrition_label") {
+          const prompt = `You are reading a packaged food nutrition label from an image.
+
+Your job:
+1. Read the nutrition table and any visible product/brand text from the package.
+2. Return the nutrition data as accurately as possible from what is visible.
+3. If the label is partially unreadable, make conservative estimates and say so in health_reasoning.
+4. Prefer the nutrition facts panel over front-of-pack marketing claims.
+5. If product name or brand is not visible, use "Unknown".
+6. If total pack weight is not visible, set "product_weight_g" to 0.
+7. Use the visible serving basis exactly when possible (for example "per 70g serving", "per pack", or "per 100g").
+8. Mention clearly in "health_reasoning" that this was read from a nutrition-label photo.
+
+Respond ONLY in JSON:
+{
+  "product_name": string,
+  "brand": string,
+  "serving_size": string,
+  "product_weight_g": number,
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "sugar": number,
+  "fiber": number,
+  "sodium_mg": number,
+  "saturated_fat": number,
+  "trans_fat": number,
+  "cholesterol_mg": number,
+  "ingredients_concern": [string],
+  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string,
+  "additives": [string],
+  "allergens": [string]
+}`;
+          const labelModel = ai.getGenerativeModel({
+            model: "gemini-2.5-flash",
+            generationConfig: { temperature: 0, topP: 0.1, topK: 1 },
+          });
+          const result = await labelModel.generateContent([
+            prompt,
+            { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
+          ]);
+          geminiText = result.response.text();
         } else {
           return res.status(400).json({ error: "Unsupported request type" });
         }
