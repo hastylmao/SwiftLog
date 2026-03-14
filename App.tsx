@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Toast from 'react-native-toast-message';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppProvider, useApp } from './src/store/AppContext';
 import { theme } from './src/theme';
@@ -165,6 +166,12 @@ function TabIcon({ focused, iconName, color }: { focused: boolean; iconName: str
 }
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+  const bottomSpacing = Platform.OS === 'android'
+    ? Math.max(insets.bottom, 18)
+    : Math.max(insets.bottom, 28);
+  const tabBarHeight = 54 + bottomSpacing;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -173,8 +180,8 @@ function MainTabs() {
           backgroundColor: 'rgba(10,10,15,0.92)',
           borderTopColor: 'rgba(255,255,255,0.06)',
           borderTopWidth: StyleSheet.hairlineWidth,
-          height: Platform.OS === 'android' ? 65 : 85,
-          paddingBottom: Platform.OS === 'android' ? 8 : 28,
+          height: tabBarHeight,
+          paddingBottom: bottomSpacing,
           paddingTop: 6,
           elevation: 0,
           shadowOpacity: 0,
@@ -249,13 +256,15 @@ function RootNavigator() {
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AppProvider>
-        <NavigationContainer theme={DarkTheme}>
-          <StatusBar style="light" />
-          <RootNavigator />
-        </NavigationContainer>
-        <Toast />
-      </AppProvider>
+      <SafeAreaProvider>
+        <AppProvider>
+          <NavigationContainer theme={DarkTheme}>
+            <StatusBar style="light" />
+            <RootNavigator />
+          </NavigationContainer>
+          <Toast />
+        </AppProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
