@@ -1,4 +1,4 @@
-const { onMessagePublished, onCall } = require("firebase-functions/v2/pubsub");
+const { onMessagePublished } = require("firebase-functions/v2/pubsub");
 const { https } = require("firebase-functions/v2");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
@@ -7,16 +7,42 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 initializeApp();
 
-/**
- * Shared Gemini API proxy: allows web/mobile clients to use the app's Gemini key
- * when they don't have their own personal key.
- * Requires Firebase authentication & enforces per-user rate limits.
- */
+function getKeyFingerprint(key) {
+  if (!key || key.length < 8) return "missing";
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+function getGeminiErrorInfo(error) {
+  const status =
+    typeof error?.status === "number"
+      ? error.status
+      : typeof error?.statusCode === "number"
+        ? error.statusCode
+        : 502;
+
+  return {
+    status: status >= 400 && status < 600 ? status : 502,
+    message: error?.message || "Unknown Gemini error",
+    details:
+      error?.errorDetails ||
+      error?.details ||
+      error?.response?.data ||
+      error?.stack ||
+      String(error),
+  };
+}
+
 exports.geminiProxy = https.onRequest(
-  { cors: ["http://localhost:3000", "http://localhost:8081", "https://swift-log-gamma.vercel.app"], region: "us-central1" },
+  {
+    cors: [
+      "http://localhost:3000",
+      "http://localhost:8081",
+      "https://swift-log-gamma.vercel.app",
+    ],
+    region: "us-central1",
+  },
   async (req, res) => {
     try {
-      // ── 1. Authenticate user ────────────────────────────────────────────
       const authHeader = req.headers.authorization;
       if (!authHeader?.startsWith("Bearer ")) {
         return res.status(401).json({ error: "Unauthorized" });
@@ -28,13 +54,18 @@ exports.geminiProxy = https.onRequest(
       try {
         decodedToken = await auth.verifyIdToken(idToken);
       } catch (err) {
-        console.error("Token verification failed:", err.message);
+        console.error("[geminiProxy] Token verification failed:", err?.message || err);
         return res.status(401).json({ error: "Invalid auth token" });
       }
 
       const userId = decodedToken.uid;
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const { type, payload } = body || {};
 
-      // ── 2. Rate limiting ────────────────────────────────────────────────
+      if (!type || !payload) {
+        return res.status(400).json({ error: "Missing type or payload" });
+      }
+
       const db = getFirestore();
       const now = new Date();
       const dayStr = now.toISOString().split("T")[0];
@@ -42,39 +73,37 @@ exports.geminiProxy = https.onRequest(
 
       const usageRef = db.collection("api_usage").doc(`${userId}_${dayStr}`);
       const usageSnap = await usageRef.get();
+      const usage = usageSnap.exists
+        ? usageSnap.data()
+        : { requests_today: 0, last_hour: "", requests_this_hour: 0 };
 
-      let usage = usageSnap.exists ? usageSnap.data() : { requests_today: 0, last_hour: "", requests_this_hour: 0 };
-      const isNewHour = usage.last_hour !== hour;
-
-      if (isNewHour) {
+      if (usage.last_hour !== hour) {
         usage.requests_this_hour = 0;
         usage.last_hour = hour;
       }
 
-      // Limits: 20 requests per hour, 80 per day
-      const MAX_PER_HOUR = 20;
-      const MAX_PER_DAY = 80;
+      const maxPerHour = 20;
+      const maxPerDay = 80;
 
-      if (usage.requests_this_hour >= MAX_PER_HOUR) {
-        return res.status(429).json({ error: `Rate limit: max ${MAX_PER_HOUR} requests per hour` });
-      }
-      if (usage.requests_today >= MAX_PER_DAY) {
-        return res.status(429).json({ error: `Daily limit reached (${MAX_PER_DAY} requests)` });
+      if ((usage.requests_this_hour || 0) >= maxPerHour) {
+        return res.status(429).json({ error: `Rate limit: max ${maxPerHour} requests per hour` });
       }
 
-      // ── 3. Parse request ───────────────────────────────────────────────
-      const { type, payload } = req.body;
-
-      if (!type || !payload) {
-        return res.status(400).json({ error: "Missing type or payload" });
+      if ((usage.requests_today || 0) >= maxPerDay) {
+        return res.status(429).json({ error: `Daily limit reached (${maxPerDay} requests)` });
       }
 
-      // ── 4. Call Gemini with shared key ─────────────────────────────────
       const geminiKey = process.env.GEMINI_API_KEY;
       if (!geminiKey) {
-        console.error("GEMINI_API_KEY not configured");
+        console.error("[geminiProxy] GEMINI_API_KEY not configured");
         return res.status(500).json({ error: "Server misconfigured" });
       }
+
+      console.log("[geminiProxy] Request", {
+        userId,
+        type,
+        keyFingerprint: getKeyFingerprint(geminiKey),
+      });
 
       const ai = new GoogleGenerativeAI(geminiKey);
       const model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -94,13 +123,12 @@ exports.geminiProxy = https.onRequest(
           ]);
           geminiText = result.response.text();
         } else if (type === "chat") {
-          // Chat mode: Build system prompt + history
           const { message, systemPrompt, history } = payload;
           const chat = model.startChat({
             history: [
-              { role: 'user', parts: [{ text: systemPrompt }] },
-              { role: 'model', parts: [{ text: `Got it! I have all your data loaded. How can I help?` }] },
-              ...history,
+              { role: "user", parts: [{ text: systemPrompt }] },
+              { role: "model", parts: [{ text: "Got it! I have all your data loaded. How can I help?" }] },
+              ...(Array.isArray(history) ? history : []),
             ],
           });
           const result = await chat.sendMessage(message);
@@ -109,46 +137,69 @@ exports.geminiProxy = https.onRequest(
           return res.status(400).json({ error: "Unsupported request type" });
         }
       } catch (geminiErr) {
-        console.error('[geminiProxy] Gemini API error:', geminiErr.message || geminiErr);
-        return res.status(502).json({ 
-          error: "AI service error: " + (geminiErr.message || "Unknown error"),
-          details: geminiErr.toString()
+        const errorInfo = getGeminiErrorInfo(geminiErr);
+        console.error("[geminiProxy] Gemini API error:", {
+          userId,
+          type,
+          status: errorInfo.status,
+          message: errorInfo.message,
+          details: errorInfo.details,
+        });
+        return res.status(errorInfo.status).json({
+          error: "AI service error",
+          message: errorInfo.message,
+          details: errorInfo.details,
         });
       }
 
-      // Parse JSON from response (only for food types)
       let responseData = {};
       if (type === "chat") {
         responseData = { text: geminiText };
       } else {
         const match = geminiText.match(/\{[\s\S]*\}/);
         if (!match) {
-          return res.status(502).json({ error: "Invalid AI response" });
+          console.error("[geminiProxy] Invalid non-JSON Gemini response:", {
+            userId,
+            type,
+            rawText: geminiText,
+          });
+          return res.status(502).json({ error: "Invalid AI response", details: geminiText });
         }
-        responseData = JSON.parse(match[0]);
+
+        try {
+          responseData = JSON.parse(match[0]);
+        } catch (parseErr) {
+          console.error("[geminiProxy] Failed to parse Gemini JSON:", {
+            userId,
+            type,
+            rawText: geminiText,
+            error: parseErr?.message || parseErr,
+          });
+          return res.status(502).json({ error: "Invalid AI response", details: geminiText });
+        }
       }
 
-      // ── 5. Increment usage counters ────────────────────────────────────
-      await usageRef.update({
-        requests_today: (usage.requests_today || 0) + 1,
-        requests_this_hour: (usage.requests_this_hour || 0) + 1,
-        last_hour: hour,
-      });
+      await usageRef.set(
+        {
+          requests_today: (usage.requests_today || 0) + 1,
+          requests_this_hour: (usage.requests_this_hour || 0) + 1,
+          last_hour: hour,
+          updated_at: now.toISOString(),
+        },
+        { merge: true }
+      );
 
-      // ── 6. Return result ───────────────────────────────────────────────
       return res.status(200).json(responseData);
     } catch (err) {
       console.error("[geminiProxy] Error:", err);
-      return res.status(500).json({ error: "Internal server error" });
+      return res.status(500).json({
+        error: "Internal server error",
+        message: err?.message || String(err),
+      });
     }
   }
 );
 
-/**
- * Budget kill switch: triggered by Cloud Billing budget alert via Pub/Sub.
- * When cost >= 100% of the 20,000 INR budget, clears the Gemini API key
- * from all users' settings in Firestore, effectively stopping all AI usage.
- */
 exports.budgetKillSwitch = onMessagePublished(
   { topic: "budget-alerts", region: "us-central1" },
   async (event) => {
@@ -157,14 +208,12 @@ exports.budgetKillSwitch = onMessagePublished(
     console.log("Budget alert received:", JSON.stringify(data));
 
     const costAmount = data.costAmount || 0;
-    const budgetAmount = data.budgetAmount || 0;
     const alertThresholdExceeded = data.alertThresholdExceeded || 0;
 
     console.log(
-      `Cost: ${costAmount}, Budget: ${budgetAmount}, Threshold: ${alertThresholdExceeded}`
+      `Cost: ${costAmount}, Budget: ${data.budgetAmount || 0}, Threshold: ${alertThresholdExceeded}`
     );
 
-    // Only kill when actual spend >= 100% of budget
     if (alertThresholdExceeded >= 1.0) {
       console.log("BUDGET EXCEEDED! Disabling Gemini API keys...");
 
@@ -193,9 +242,7 @@ exports.budgetKillSwitch = onMessagePublished(
         console.log("No active Gemini keys found.");
       }
     } else {
-      console.log(
-        `Alert at ${(alertThresholdExceeded * 100).toFixed(0)}% — no action needed yet.`
-      );
+      console.log(`Alert at ${(alertThresholdExceeded * 100).toFixed(0)}% - no action needed yet.`);
     }
   }
 );
