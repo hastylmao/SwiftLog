@@ -13,7 +13,7 @@ initializeApp();
  * Requires Firebase authentication & enforces per-user rate limits.
  */
 exports.geminiProxy = https.onRequest(
-  { cors: ["http://localhost:3000", "http://localhost:8081", "https://swift-log-gamma.vercel.app"], region: "us-central1" },
+  { cors: true, invoker: "public", region: "us-central1" },
   async (req, res) => {
     try {
       // ── 1. Authenticate user ────────────────────────────────────────────
