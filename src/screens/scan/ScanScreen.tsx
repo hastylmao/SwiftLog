@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Dimensions, TextInput,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
@@ -11,7 +11,7 @@ import Toast from 'react-native-toast-message';
 
 import { theme } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { analyzeNutritionLabelImage, ProductAnalysis } from '../../services/gemini';
+import { analyzeNutritionLabelImage, analyzeFrontPackageImage, ProductAnalysis } from '../../services/gemini';
 import { auth } from '../../services/firebase';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { FoodLog } from '../../types';
@@ -28,11 +28,15 @@ const HEALTH_CONFIG: Record<string, { color: string; bg: string; icon: string; l
 
 export default function ScanScreen() {
   const { settings, logFood } = useApp();
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [scanMode, setScanMode] = useState<'nutrition_label' | 'front_package'>('nutrition_label');
   const [loadingStage, setLoadingStage] = useState('Reading nutrition label');
   const [product, setProduct] = useState<ProductAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const cameraRef = useRef<CameraView | null>(null);
   const lastSource = useRef<'camera' | 'gallery' | ''>('');
 
   const getAuthToken = useCallback(async () => {
@@ -42,60 +46,90 @@ export default function ScanScreen() {
     return undefined;
   }, [settings?.gemini_api_key]);
 
-  const analyzeNutritionLabel = useCallback(async (source: 'camera' | 'gallery') => {
+  const analyzeImageBase64 = useCallback(async (imageBase64: string, source: 'camera' | 'gallery', mode: 'nutrition_label' | 'front_package') => {
     try {
       if (loading) return;
-      let result: ImagePicker.ImagePickerResult;
-      if (source === 'camera') {
-        const perm = await ImagePicker.requestCameraPermissionsAsync();
-        if (!perm.granted) {
-          Toast.show({ type: 'error', text1: 'Permission needed', text2: 'Camera access is required' });
-          return;
-        }
-        result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
-      } else {
-        result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.8,
-        });
-      }
-
-      if (result.canceled || !result.assets[0]) {
-        return;
-      }
-
-      const manipulated = await ImageManipulator.manipulateAsync(
-        result.assets[0].uri,
-        [{ resize: { width: 1200 } }],
-        { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG, base64: true }
-      );
-
-      if (!manipulated.base64) {
-        throw new Error('Could not prepare the nutrition label photo.');
-      }
-
       lastSource.current = source;
+      setScanMode(mode);
       setScanned(true);
       setLoading(true);
-      setLoadingStage('Reading nutrition label');
+      setLoadingStage(mode === 'nutrition_label' ? 'Reading nutrition label' : 'Reading front package');
       setError(null);
 
       const authToken = await getAuthToken();
-      const analysis = await analyzeNutritionLabelImage(
-        manipulated.base64,
-        settings?.gemini_api_key || '',
-        authToken,
-        setLoadingStage,
-      );
+      const analysis = mode === 'nutrition_label' 
+        ? await analyzeNutritionLabelImage(imageBase64, settings?.gemini_api_key || '', authToken, setLoadingStage)
+        : await analyzeFrontPackageImage(imageBase64, settings?.gemini_api_key || '', authToken, setLoadingStage);
+        
       setProduct(analysis);
     } catch (err: any) {
-      setError(err?.message || 'Failed to read nutrition label. Try a clearer photo.');
+      setError(err?.message || 'Failed to read image. Try a clearer photo.');
     } finally {
       setLoading(false);
     }
   }, [getAuthToken, loading, settings?.gemini_api_key]);
 
+  const openCameraCapture = useCallback(async (mode: 'nutrition_label' | 'front_package') => {
+    if (loading) return;
+    const perm = cameraPermission?.granted
+      ? cameraPermission
+      : await requestCameraPermission();
+
+    if (!perm?.granted) {
+      Toast.show({ type: 'error', text1: 'Permission needed', text2: 'Camera access is required' });
+      return;
+    }
+
+    setScanMode(mode);
+    setCameraOpen(true);
+  }, [cameraPermission, loading, requestCameraPermission]);
+
+  const analyzeImageFromGallery = useCallback(async (mode: 'nutrition_label' | 'front_package') => {
+    try {
+      if (loading) return;
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 1,
+        base64: true,
+      });
+
+      if (result.canceled || !result.assets[0]) {
+        return;
+      }
+
+      if (!result.assets[0].base64) {
+        throw new Error('Could not read the selected photo.');
+      }
+
+      await analyzeImageBase64(result.assets[0].base64, 'gallery', mode);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to read image. Try a clearer photo.');
+      setScanned(true);
+    }
+  }, [analyzeImageBase64, loading]);
+
+  const captureImage = useCallback(async () => {
+    try {
+      if (loading || !cameraRef.current) return;
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 1,
+        skipProcessing: true,
+      });
+
+      if (!photo?.base64) {
+        throw new Error('Could not capture the photo.');
+      }
+
+      setCameraOpen(false);
+      await analyzeImageBase64(photo.base64, 'camera', scanMode);
+    } catch (err: any) {
+      Toast.show({ type: 'error', text1: 'Capture failed', text2: err?.message || 'Try taking the photo again.' });
+    }
+  }, [analyzeImageBase64, loading, scanMode]);
+
   const resetScan = () => {
+    setCameraOpen(false);
     setScanned(false);
     setProduct(null);
     setError(null);
@@ -105,7 +139,29 @@ export default function ScanScreen() {
   return (
     <View style={styles.container}>
       <AnimatedBackground />
-      {!scanned ? (
+      {cameraOpen ? (
+        <View style={styles.cameraShell}>
+          <CameraView ref={cameraRef} style={styles.cameraView} facing="back" />
+          <View style={styles.cameraOverlay}>
+            <Pressable style={styles.cameraCloseBtn} onPress={() => setCameraOpen(false)}>
+              <Ionicons name="close" size={34} color="#fff" />
+            </Pressable>
+            <View style={styles.cameraGuideCard}>
+              <Text style={styles.cameraGuideTitle}>{scanMode === 'nutrition_label' ? 'Fit the nutrition table in frame' : 'Fit the product front in frame'}</Text>
+              <Text style={styles.cameraGuideText}>{scanMode === 'nutrition_label' ? 'Keep the text flat, sharp, and close.' : 'Make sure the brand and product name are visible.'}</Text>
+            </View>
+            <View style={styles.cameraBottomBar}>
+              <Pressable style={styles.cameraGalleryBtn} onPress={() => { setCameraOpen(false); void analyzeImageFromGallery(scanMode); }}>
+                <Ionicons name="images-outline" size={22} color="#fff" />
+              </Pressable>
+              <Pressable style={styles.shutterOuter} onPress={() => { void captureImage(); }}>
+                <View style={styles.shutterInner} />
+              </Pressable>
+              <View style={styles.cameraBottomSpacer} />
+            </View>
+          </View>
+        </View>
+      ) : !scanned ? (
         <ScrollView contentContainerStyle={styles.entryScroll} showsVerticalScrollIndicator={false}>
           <Animated.View entering={FadeIn.duration(400)} style={styles.entryHero}>
             <View style={styles.entryIconWrap}>
@@ -113,31 +169,38 @@ export default function ScanScreen() {
                 <Ionicons name="document-text-outline" size={40} color="#67E8F9" />
               </LinearGradient>
             </View>
-            <Text style={styles.entryTitle}>Scan Nutrition Label</Text>
+            <Text style={styles.entryTitle}>Product Scanner</Text>
             <Text style={styles.entrySub}>
-              Take a clear photo of the nutrition facts panel on the package. This is now the primary scan flow because it is more reliable than barcode lookup for most products.
+              Scan the nutrition label for exact macros, or the front package for an AI estimate.
             </Text>
           </Animated.View>
 
           <Animated.View entering={FadeInDown.delay(120).duration(400)} style={styles.entryCard}>
-            <Pressable style={styles.entryActionBtn} onPress={() => { void analyzeNutritionLabel('camera'); }}>
+            <Pressable style={styles.entryActionBtn} onPress={() => { void openCameraCapture('nutrition_label'); }}>
               <LinearGradient colors={['#00E5FF', '#4A90FF']} style={styles.entryActionGrad}>
-                <Ionicons name="camera-outline" size={24} color="#081018" />
-                <Text style={styles.entryActionPrimary}>Take Label Photo</Text>
-                <Text style={styles.entryActionSecondary}>Open camera and capture the nutrition panel</Text>
+                <Ionicons name="document-text-outline" size={24} color="#081018" />
+                <Text style={styles.entryActionPrimary}>Scan Nutrition Label</Text>
+                <Text style={styles.entryActionSecondary}>Get exact macros from the table</Text>
               </LinearGradient>
             </Pressable>
 
-            <Pressable style={styles.entryGhostBtn} onPress={() => { void analyzeNutritionLabel('gallery'); }}>
+            <Pressable style={styles.entryActionBtn} onPress={() => { void openCameraCapture('front_package'); }}>
+              <LinearGradient colors={['#FACC15', '#FF8A00']} style={styles.entryActionGrad}>
+                <Ionicons name="scan-outline" size={24} color="#081018" />
+                <Text style={styles.entryActionPrimary}>Scan Front Package</Text>
+                <Text style={styles.entryActionSecondary}>AI estimates from the product look</Text>
+              </LinearGradient>
+            </Pressable>
+
+            <Pressable style={styles.entryGhostBtn} onPress={() => { void analyzeImageFromGallery('nutrition_label'); }}>
               <Ionicons name="images-outline" size={20} color="#fff" />
-              <Text style={styles.entryGhostText}>Upload Label From Gallery</Text>
+              <Text style={styles.entryGhostText}>Upload Image From Gallery</Text>
             </Pressable>
 
             <View style={styles.tipCard}>
               <Text style={styles.tipTitle}>Best results</Text>
-              <Text style={styles.tipText}>Fill the frame with the nutrition facts table.</Text>
-              <Text style={styles.tipText}>Keep the serving size and pack weight visible if they are nearby.</Text>
-              <Text style={styles.tipText}>Avoid glare and make sure the numbers are sharp.</Text>
+              <Text style={styles.tipText}>Nutrition Label: Fill frame with text, avoid glare.</Text>
+              <Text style={styles.tipText}>Front Package: Ensure the brand and product name are clearly readable.</Text>
             </View>
           </Animated.View>
         </ScrollView>
@@ -155,9 +218,15 @@ export default function ScanScreen() {
               <Animated.View entering={FadeIn} style={styles.errorWrap}>
                 <Ionicons name="alert-circle-outline" size={44} color="#FF6D00" />
                 <Text style={styles.errorText}>{error}</Text>
-                <Pressable style={styles.labelFallbackBtn} onPress={() => { void analyzeNutritionLabel(lastSource.current || 'camera'); }}>
+                <Pressable style={styles.labelFallbackBtn} onPress={() => {
+                  if ((lastSource.current || 'camera') === 'camera') {
+                    void openCameraCapture(scanMode);
+                    return;
+                  }
+                  void analyzeImageFromGallery(scanMode);
+                }}>
                   <Ionicons name="camera-outline" size={18} color="#00E5FF" />
-                  <Text style={styles.labelFallbackText}>Retake Nutrition Label</Text>
+                  <Text style={styles.labelFallbackText}>Retake Photo</Text>
                 </Pressable>
                 <Pressable style={styles.scanAgainBtn} onPress={resetScan}>
                   <Ionicons name="arrow-back-outline" size={18} color="#fff" />
@@ -168,7 +237,13 @@ export default function ScanScreen() {
               <ProductResult
                 product={product}
                 onScanAgain={resetScan}
-                onUseNutritionLabel={() => { void analyzeNutritionLabel(lastSource.current || 'camera'); }}
+                onUseNutritionLabel={() => {
+                  if ((lastSource.current || 'camera') === 'camera') {
+                    void openCameraCapture('nutrition_label');
+                    return;
+                  }
+                  void analyzeImageFromGallery('nutrition_label');
+                }}
                 logFood={logFood}
               />
             ) : null}
@@ -508,6 +583,71 @@ function NutrientRow({ label, value, warn, good }: { label: string; value: strin
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#020408' },
+  cameraShell: { flex: 1, backgroundColor: '#000' },
+  cameraView: { flex: 1 },
+  cameraOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'space-between',
+    paddingTop: 56,
+    paddingBottom: 44,
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  cameraCloseBtn: {
+    alignSelf: 'flex-end',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  cameraGuideCard: {
+    alignSelf: 'stretch',
+    backgroundColor: 'rgba(0,0,0,0.34)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    padding: 16,
+    marginTop: 24,
+  },
+  cameraGuideTitle: { color: '#fff', fontSize: 16, fontWeight: '800', marginBottom: 8 },
+  cameraGuideText: { color: 'rgba(255,255,255,0.78)', fontSize: 13, lineHeight: 20 },
+  cameraBottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 24,
+  },
+  cameraGalleryBtn: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.30)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  shutterOuter: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.24)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.95)',
+  },
+  shutterInner: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#fff',
+  },
+  cameraBottomSpacer: { width: 54, height: 54 },
   entryScroll: { flexGrow: 1, padding: 20, paddingTop: 72, paddingBottom: 120 },
   entryHero: { alignItems: 'center', marginBottom: 24 },
   entryIconWrap: {

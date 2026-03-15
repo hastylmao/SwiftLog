@@ -177,19 +177,19 @@ Respond ONLY in JSON:
           const result = await barcodeModel.generateContent(prompt);
           geminiText = result.response.text();
         } else if (type === "nutrition_label") {
-          const prompt = `You are reading a packaged food nutrition label from an image.
+          const prompt = `Read this packaged food nutrition label image.
 
-Your job:
-1. Read the nutrition table and any visible product/brand text from the package.
-2. Return the nutrition data as accurately as possible from what is visible.
-3. If the label is partially unreadable, make conservative estimates and say so in health_reasoning.
-4. Prefer the nutrition facts panel over front-of-pack marketing claims.
-5. If product name or brand is not visible, use "Unknown".
-6. If total pack weight is not visible, set "product_weight_g" to 0.
-7. Use the visible serving basis exactly when possible (for example "per 70g serving", "per pack", or "per 100g").
-8. Mention clearly in "health_reasoning" that this was read from a nutrition-label photo.
+The image may be mirrored, upside down, sideways, or rotated. Mentally reorient it first before extracting anything.
 
-Respond ONLY in JSON:
+  Priorities:
+  - Read the nutrition facts table first.
+  - Extract product name, brand, serving basis, and pack weight if visible.
+  - If some text is unreadable, make a conservative estimate and mention that in health_reasoning.
+- If product name or brand is not visible, use "Unknown".
+- If total pack weight is not visible, set "product_weight_g" to 0.
+- Mention that this came from a nutrition-label photo.
+
+Respond ONLY in compact JSON:
 {
   "product_name": string,
   "brand": string,
@@ -213,9 +213,56 @@ Respond ONLY in JSON:
 }`;
           const labelModel = ai.getGenerativeModel({
             model: "gemini-2.5-flash",
-            generationConfig: { temperature: 0, topP: 0.1, topK: 1 },
+            generationConfig: {
+              temperature: 0,
+              topP: 0.1,
+              topK: 1,
+              maxOutputTokens: 900,
+            },
           });
           const result = await labelModel.generateContent([
+            prompt,
+            { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
+          ]);
+          geminiText = result.response.text();
+        } else if (type === "front_package") {
+          const prompt = `Look at the front of this packaged food item. Identify the product name and brand.
+Using your training data, securely estimate the full nutritional profile for this exact product (calories, protein, carbs, fat, sugar, fiber, sodium_mg, saturated_fat, trans_fat, cholesterol_mg). Provide ingredients_concern, health_rating, health_reasoning, additives, and allergens based on known data about this product or similar ones.
+If the pack weight is visible, extract it, otherwise estimate a typical serving size.
+Set "source" to "front_package".
+
+Respond ONLY in compact JSON:
+{
+  "product_name": string,
+  "brand": string,
+  "serving_size": string,
+  "product_weight_g": number,
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "sugar": number,
+  "fiber": number,
+  "sodium_mg": number,
+  "saturated_fat": number,
+  "trans_fat": number,
+  "cholesterol_mg": number,
+  "ingredients_concern": [string],
+  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string,
+  "additives": [string],
+  "allergens": [string]
+}`;
+          const frontModel = ai.getGenerativeModel({
+            model: "gemini-2.5-flash",
+            generationConfig: {
+              temperature: 0,
+              topP: 0.1,
+              topK: 1,
+              maxOutputTokens: 900,
+            },
+          });
+          const result = await frontModel.generateContent([
             prompt,
             { inlineData: { mimeType: "image/jpeg", data: payload.imageBase64 } },
           ]);

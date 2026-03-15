@@ -49,9 +49,34 @@ const WORKOUT_PROMPT = (description: string) =>
 // Parse a JSON snippet out of a Gemini text response
 // ──────────────────────────────────────────────────────────────────────────
 function parseJsonFromText<T>(text: string): T {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Could not parse AI response as JSON');
-  return JSON.parse(match[0]) as T;
+  const trimmed = text.trim();
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {}
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1]) as T;
+    } catch {}
+  }
+
+  const match = trimmed.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]) as T;
+    } catch {}
+  }
+
+  const matchArr = trimmed.match(/\[[\s\S]*\]/);
+  if (matchArr) {
+    try {
+      return JSON.parse(matchArr[0]) as T;
+    } catch {}
+  }
+
+  throw new Error('Could not parse AI response as JSON: ' + trimmed.substring(0, 100));
 }
 
 /** Safely convert any value to a finite number, returning fallback for NaN/Infinity/null/undefined/strings */
@@ -64,7 +89,7 @@ export function safeNum(val: any, fallback = 0): number {
 // Call Gemini proxy on Firebase Cloud Functions (shared key)
 // ──────────────────────────────────────────────────────────────────────────
 async function callGeminiProxy<T>(
-  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'nutrition_label' | 'chat',
+  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'nutrition_label' | 'front_package' | 'chat',
   payload: any,
   authToken: string
 ): Promise<T> {
@@ -607,7 +632,7 @@ export async function generateRoast(
 export interface ProductAnalysis {
   product_name: string;
   brand: string;
-  source?: 'database' | 'ai_estimate' | 'nutrition_label';
+  source?: 'database' | 'ai_estimate' | 'nutrition_label' | 'front_package';
   serving_size: string;
   product_weight_g: number;  // total pack weight in grams (0 if unknown)
   calories: number;
@@ -658,19 +683,83 @@ export async function analyzeNutritionLabelImage(
 ): Promise<ProductAnalysis> {
   onStageChange?.('Reading nutrition label...');
 
-  const prompt = `You are reading a packaged food nutrition label from an image.
+  const prompt = `Read this packaged food nutrition label image.
 
-Your job:
-1. Read the nutrition table and any visible product/brand text from the package.
-2. Return the nutrition data as accurately as possible from what is visible.
-3. If the label is partially unreadable, make conservative estimates and say so in health_reasoning.
-4. Prefer the nutrition facts panel over front-of-pack marketing claims.
-5. If product name or brand is not visible, use "Unknown".
-6. If total pack weight is not visible, set "product_weight_g" to 0.
-7. Use the visible serving basis exactly when possible (for example "per 70g serving", "per pack", or "per 100g").
-8. Mention clearly in health_reasoning that this was read from a nutrition-label photo.
+The image may be mirrored, upside down, sideways, or rotated. Mentally reorient it first before extracting anything.
 
-Respond ONLY in JSON:
+  Priorities:
+  - Read the nutrition facts table first.
+  - Extract product name, brand, serving basis, and pack weight if visible.
+  - If some text is unreadable, make a conservative estimate and mention that in health_reasoning.
+- If product name or brand is not visible, use "Unknown".
+- If total pack weight is not visible, set "product_weight_g" to 0.
+- Mention that this came from a nutrition-label photo.
+
+Respond ONLY in compact JSON:
+{
+  "product_name": string,
+  "brand": string,
+  "serving_size": string,
+  "product_weight_g": number,
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "sugar": number,
+  "fiber": number,
+  "sodium_mg": number,
+  "saturated_fat": number,
+  "trans_fat": number,
+  "cholesterol_mg": number,
+  "ingredients_concern": [string],
+  "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string,
+  "additives": [string],
+  "allergens": [string]
+}`;
+
+  await enforceRateLimit('analyze_barcode');
+  let parsed: ProductAnalysis;
+
+    if (userApiKey) {
+      const ai = new GoogleGenerativeAI(userApiKey);
+      const model = ai.getGenerativeModel({
+        model: PERSONAL_MODEL,
+        generationConfig: {
+          temperature: 0,
+          topP: 0.1,
+          topK: 1,
+          maxOutputTokens: 900,
+        },
+      });
+      const result = await model.generateContent([
+        prompt,
+        { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+      ]);
+    parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
+  } else if (authToken) {
+    parsed = await callGeminiProxy<ProductAnalysis>('nutrition_label', { imageBase64 }, authToken);
+  } else {
+    throw new Error('Gemini API key required. Add it in Settings.');
+  }
+
+  return normalizeProductAnalysis(parsed, 'nutrition_label');
+}
+
+export async function analyzeFrontPackageImage(
+  imageBase64: string,
+  userApiKey: string,
+  authToken?: string,
+  onStageChange?: (message: string) => void
+): Promise<ProductAnalysis> {
+  onStageChange?.('Reading front package image...');
+
+  const prompt = `Look at the front of this packaged food item. Identify the product name and brand.
+Using your training data, securely estimate the full nutritional profile for this exact product (calories, protein, carbs, fat, sugar, fiber, sodium_mg, saturated_fat, trans_fat, cholesterol_mg). Provide ingredients_concern, health_rating, health_reasoning, additives, and allergens based on known data about this product or similar ones.
+If the pack weight is visible, extract it, otherwise estimate a typical serving size.
+Set "source" to "front_package".
+
+Respond ONLY in compact JSON:
 {
   "product_name": string,
   "brand": string,
@@ -700,7 +789,12 @@ Respond ONLY in JSON:
     const ai = new GoogleGenerativeAI(userApiKey);
     const model = ai.getGenerativeModel({
       model: PERSONAL_MODEL,
-      generationConfig: { temperature: 0, topP: 0.1, topK: 1 },
+      generationConfig: {
+        temperature: 0,
+        topP: 0.1,
+        topK: 1,
+        maxOutputTokens: 900,
+      },
     });
     const result = await model.generateContent([
       prompt,
@@ -708,12 +802,12 @@ Respond ONLY in JSON:
     ]);
     parsed = parseJsonFromText<ProductAnalysis>(result.response.text());
   } else if (authToken) {
-    parsed = await callGeminiProxy<ProductAnalysis>('nutrition_label', { imageBase64 }, authToken);
+    parsed = await callGeminiProxy<ProductAnalysis>('front_package', { imageBase64 }, authToken);
   } else {
     throw new Error('Gemini API key required. Add it in Settings.');
   }
 
-  return normalizeProductAnalysis(parsed, 'nutrition_label');
+  return normalizeProductAnalysis(parsed, 'front_package');
 }
 
 export async function analyzeProductBarcode(
