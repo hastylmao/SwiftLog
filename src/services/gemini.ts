@@ -8,7 +8,7 @@ import {
 } from '../types';
 import { checkRateLimit, incrementRateLimit, getRateLimitError } from './rateLimit';
 
-const PERSONAL_MODEL = 'gemini-1.5-flash';
+const PERSONAL_MODEL = 'gemini-1.5-flash-latest';
 const FUNCTIONS_URL = 'https://geminiproxy-gvrxpzalkq-uc.a.run.app';
 const OPEN_FOOD_FACTS_URL = 'https://world.openfoodfacts.org/api/v2/product';
 const OPEN_FOOD_FACTS_TIMEOUT_MS = 2500;
@@ -59,7 +59,30 @@ async function enforceRateLimit(feature: string): Promise<void> {
   await incrementRateLimit(feature);
 }
 
-// ── Prompt builders ────────────────────────────────────────────────────────
+const NUTRITION_LABEL_PROMPT = `You are a nutrition log assistant. Read the provided nutrition facts table image. 
+Extract the following details as accurately as possible. Mentally reorient the image if it is sideways or upside down.
+Prioritize: Product Name, Brand, Serving Size, Calories, Protein, Carbs, Fat, Sugar, Fiber, Sodium (mg), Saturated Fat, Trans Fat, and Cholesterol (mg).
+If a value is not found, use a reasonable estimate for that specific product type.
+Respond ONLY in JSON format following this structure:
+{
+  "product_name": string, "brand": string, "serving_size": string, "product_weight_g": number,
+  "calories": number, "protein": number, "carbs": number, "fat": number, "sugar": number, "fiber": number,
+  "sodium_mg": number, "saturated_fat": number, "trans_fat": number, "cholesterol_mg": number,
+  "ingredients_concern": [string], "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string, "additives": [string], "allergens": [string]
+}`;
+
+const FRONT_PACKAGE_PROMPT = `You are a nutrition analyst. Look at the front of this food packaging.
+Identify the exact product and brand. Based on your knowledge database of nutritional information for this specific product (or very similar ones), provide a full nutritional profile.
+Respond ONLY in JSON format following this structure:
+{
+  "product_name": string, "brand": string, "serving_size": string, "product_weight_g": number,
+  "calories": number, "protein": number, "carbs": number, "fat": number, "sugar": number, "fiber": number,
+  "sodium_mg": number, "saturated_fat": number, "trans_fat": number, "cholesterol_mg": number,
+  "ingredients_concern": [string], "health_rating": "dangerous"|"bad"|"alright"|"good"|"healthy",
+  "health_reasoning": string, "additives": [string], "allergens": [string]
+}`;
+
 const FOOD_IMAGE_PROMPT = (description: string) =>
   `You are a nutrition analyst. Given a photo of food and a text description, estimate the calories, protein (g), carbs (g), and fat (g). Respond ONLY in JSON: {"calories": number, "protein": number, "carbs": number, "fat": number, "food_name": string}.\n\nDescription: ${description}`;
 
@@ -323,7 +346,7 @@ function normalizeProductAnalysis(parsed: ProductAnalysis, source: ProductAnalys
 
 export async function analyzeNutritionLabelImage(imageBase64: string, userApiKey: string, authToken?: string, onStageChange?: (message: string) => void): Promise<ProductAnalysis> {
   onStageChange?.('Reading nutrition label...');
-  const prompt = `Read nutrition label image. Extract product, brand, weight, macros. JSON ONLY.`;
+  const prompt = NUTRITION_LABEL_PROMPT;
   await enforceRateLimit('analyze_barcode');
   let parsed: ProductAnalysis;
   if (userApiKey) {
@@ -339,7 +362,7 @@ export async function analyzeNutritionLabelImage(imageBase64: string, userApiKey
 
 export async function analyzeFrontPackageImage(imageBase64: string, userApiKey: string, authToken?: string, onStageChange?: (message: string) => void): Promise<ProductAnalysis> {
   onStageChange?.('Identifying product...');
-  const prompt = `Analyze front package. Identify product and estimate nutritional data. JSON ONLY.`;
+  const prompt = FRONT_PACKAGE_PROMPT;
   await enforceRateLimit('analyze_barcode');
   let parsed: ProductAnalysis;
   if (userApiKey) {

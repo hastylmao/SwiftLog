@@ -20,13 +20,22 @@ export default function AISettingsScreen({ navigation }: any) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await saveSettings({ gemini_api_key: apiKey.trim() || undefined });
+      // Use empty string explicitly to ensure Firestore overwrites the field (as saveSettings uses merge: true)
+      const cleanKey = apiKey.trim();
+      await saveSettings({ gemini_api_key: cleanKey });
+      
       Toast.show({
         type: 'success',
-        text1: apiKey.trim() ? 'Personal key saved' : 'Using shared app key',
-        text2: apiKey.trim() ? 'Your own Gemini key will power AI calls.' : 'The app will use the built-in shared key again.',
+        text1: cleanKey ? 'Personal key saved' : 'Key removed',
+        text2: cleanKey ? 'Your personal Gemini key is now active.' : 'Switched back to shared app key.',
       });
+
+      // Clear local state if they just removed it to avoid it showing up as masked
+      if (!cleanKey) setApiKey('');
+      
       navigation.goBack();
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: 'Error', text2: error.message || 'Failed to save settings' });
     } finally {
       setSaving(false);
     }
@@ -65,7 +74,7 @@ export default function AISettingsScreen({ navigation }: any) {
                 label="Gemini API Key"
                 value={apiKey}
                 onChangeText={setApiKey}
-                placeholder="AIzaSy..."
+                placeholder="AIzaSy... (leave empty to use shared)"
                 secureTextEntry={!showKey}
                 autoCapitalize="none"
               />
@@ -74,9 +83,23 @@ export default function AISettingsScreen({ navigation }: any) {
               <Ionicons name={showKey ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.colors.textSecondary} />
             </Pressable>
           </View>
+          
+          {usingPersonalKey && (
+            <Pressable 
+              onPress={() => {
+                setApiKey('');
+                // We don't save immediately, let them hit Save to confirm
+              }} 
+              style={styles.clearBtn}
+            >
+              <Ionicons name="trash-outline" size={14} color={theme.colors.error} />
+              <Text style={styles.clearBtnText}>Clear Personal Key</Text>
+            </Pressable>
+          )}
+
           <View style={styles.noteBox}>
             <Ionicons name="information-circle-outline" size={18} color={theme.colors.accent} />
-            <Text style={styles.noteText}>Leave this empty to use the shared app key. Save an empty field to switch back.</Text>
+            <Text style={styles.noteText}>To stop using your personal key, clear the field above and tap Save.</Text>
           </View>
         </View>
 
@@ -143,4 +166,20 @@ const styles = StyleSheet.create({
   noteText: { flex: 1, color: theme.colors.textSecondary, fontSize: 12, lineHeight: 18 },
   featureRow: { flexDirection: 'row', gap: 10, alignItems: 'center', paddingVertical: 8 },
   featureText: { color: '#fff', fontSize: 14, flex: 1 },
+  clearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+    marginBottom: 4,
+    alignSelf: 'flex-start',
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  },
+  clearBtnText: {
+    color: theme.colors.error,
+    fontSize: 12,
+    fontWeight: '600',
+  },
 });
