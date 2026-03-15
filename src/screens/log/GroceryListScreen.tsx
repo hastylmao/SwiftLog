@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Share,
 } from 'react-native';
@@ -8,6 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { useApp } from '../../store/AppContext';
 import { generateGroceryList } from '../../services/gemini';
+import { auth } from '../../services/firebase';
 import { GroceryList, GroceryCategory } from '../../types';
 
 const G = {
@@ -68,6 +69,7 @@ export default function GroceryListScreen({ navigation }: any) {
           todaySleepLogs,
         },
         settings?.gemini_api_key || '',
+        await auth.currentUser?.getIdToken() || undefined
       );
       setList(result);
     } catch {}

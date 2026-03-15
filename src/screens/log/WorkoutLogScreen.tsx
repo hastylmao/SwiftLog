@@ -1,4 +1,4 @@
-﻿import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, FlatList, TextInput,
   KeyboardAvoidingView, Platform, Modal, Image,
@@ -17,6 +17,7 @@ import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import GlowingIcon from '../../components/ui/GlowingIcon';
 import { searchExercises, getMuscleGroups } from '../../constants/exercises';
 import { parseWorkout } from '../../services/gemini';
+import { auth } from '../../services/firebase';
 import { ExerciseDB } from '../../types';
 import { MUSCLE_ICONS, getMuscleIcon, ACTIVITY_ICONS } from '../../constants/icons';
 import Toast from 'react-native-toast-message';
@@ -150,9 +151,10 @@ export default function WorkoutLogScreen({ navigation }: any) {
       return;
     }
     const apiKey = settings?.gemini_api_key || '';
+    const authToken = !apiKey ? await auth.currentUser?.getIdToken() : undefined;
     setLoading(true);
     try {
-      const result = await parseWorkout(aiPrompt, apiKey);
+      const result = await parseWorkout(aiPrompt, apiKey, authToken);
       if (result.exercises?.length) {
         setExercises(result.exercises.map(e => ({
           name: e.name,

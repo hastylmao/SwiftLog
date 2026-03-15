@@ -1,4 +1,4 @@
-﻿import React, { useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, Alert, ActivityIndicator, ScrollView,
 } from 'react-native';
@@ -9,6 +9,7 @@ import { captureRef } from 'react-native-view-shot';
 import * as Sharing from 'expo-sharing';
 import { useApp } from '../../store/AppContext';
 import { generateRoast } from '../../services/gemini';
+import { auth } from '../../services/firebase';
 
 const G = {
   bg: '#020408',
@@ -28,7 +29,7 @@ function fmt(n: number) {
 }
 
 export default function PumpCardScreen({ navigation, route }: any) {
-  const { session } = useApp();
+  const { session, user } = useApp();
   const workout = route?.params?.workout;
   const cardRef = useRef<View>(null);
   const [sharing, setSharing] = useState(false);
@@ -73,9 +74,14 @@ export default function PumpCardScreen({ navigation, route }: any) {
   const handleRoast = async () => {
     setRoastLoading(true);
     try {
+      const apiKey = settings?.gemini_api_key || '';
+      const authToken = !apiKey ? await auth.currentUser?.getIdToken() : undefined;
       const result = await generateRoast(
-        { totalVolume, totalSets, exercises: exercises.map((e: any) => e.name) },
-        settings?.gemini_api_key || '',
+        { user: null, settings, todayFoodLogs: [], todayWaterLogs: [], todayWorkoutLogs: [], weightLogs: [], activeSplit: null, splitDays: [], achievements: [], todaySupplementLogs: [], todayStepsLogs: [], todayCardioLogs: [], todaySleepLogs: [] },
+        'workout',
+        1,
+        apiKey,
+        authToken
       );
       setRoast(result);
     } catch {
@@ -163,7 +169,7 @@ export default function PumpCardScreen({ navigation, route }: any) {
 
               {/* Footer */}
               <View style={styles.cardFooter}>
-                <Text style={styles.footerUsername}>@{session?.user?.user_metadata?.username || 'athlete'}</Text>
+                <Text style={styles.footerUsername}>@{user?.username || 'athlete'}</Text>
                 <Text style={styles.footerTag}>#SwiftLogger #FitLife</Text>
               </View>
             </LinearGradient>

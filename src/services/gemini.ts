@@ -124,7 +124,7 @@ export function safeNum(val: any, fallback = 0): number {
 }
 
 async function callGeminiProxy<T>(
-  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'nutrition_label' | 'front_package' | 'chat',
+  type: 'food_text' | 'food_image' | 'workout' | 'barcode' | 'nutrition_label' | 'front_package' | 'chat' | 'advice' | 'auto_regulation' | 'grocery_list' | 'match_macros' | 'voice_log' | 'roast',
   payload: any,
   authToken: string
 ): Promise<T> {
@@ -196,13 +196,18 @@ export async function analyzeFoodTextOnly(description: string, userApiKey: strin
   } else { throw new Error('API key required.'); }
 }
 
-export async function parseWorkout(description: string, userApiKey: string): Promise<GeminiWorkoutResponse> {
-  if (!userApiKey) throw new Error('API key required.');
+export async function parseWorkout(description: string, userApiKey: string, authToken?: string): Promise<GeminiWorkoutResponse> {
   await enforceRateLimit('parse_workout');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
-  const result = await model.generateContent(WORKOUT_PROMPT(description));
-  const parsed = parseJsonFromText<GeminiWorkoutResponse>(result.response.text());
+  let parsed: GeminiWorkoutResponse;
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
+    const result = await model.generateContent(WORKOUT_PROMPT(description));
+    parsed = parseJsonFromText<GeminiWorkoutResponse>(result.response.text());
+  } else if (authToken) {
+    parsed = await callGeminiProxy<GeminiWorkoutResponse>('workout', { description }, authToken);
+  } else { throw new Error('API key required.'); }
+
   if (parsed.exercises) {
     parsed.exercises = parsed.exercises.map(ex => ({
       ...ex,
@@ -240,13 +245,19 @@ export function buildAgenticPrompt(ctx: ChatContext): string {
   return sections.join('\n');
 }
 
-export async function getDailyAdvice(context: ChatContext, userApiKey: string): Promise<string> {
-  if (!userApiKey) throw new Error('API key required.');
+export async function getDailyAdvice(context: ChatContext, userApiKey: string, authToken?: string): Promise<string> {
   await enforceRateLimit('daily_advice');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(buildAgenticPrompt(context) + "\nGive 1 short piece of advice.");
-  return result.response.text().trim();
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const result = await model.generateContent(buildAgenticPrompt(context) + "\nGive 1 short piece of advice.");
+    return result.response.text().trim();
+  } else if (authToken) {
+    const systemPrompt = buildAgenticPrompt(context);
+    const res = await callGeminiProxy<{ text: string }>('advice', { systemPrompt }, authToken);
+    return res.text || 'No advice available right now.';
+  }
+  throw new Error('API key required.');
 }
 
 export async function chatWithAI(message: string, history: ChatHistoryItem[], context: ChatContext, userApiKey: string, authToken?: string): Promise<string> {
@@ -269,54 +280,81 @@ export async function chatWithAI(message: string, history: ChatHistoryItem[], co
 export function initGemini(_k: string) { }
 export function getEffectiveApiKey(_k?: string | null) { return { key: '', model: PERSONAL_MODEL }; }
 
-export async function checkAutoRegulation(context: ChatContext, userApiKey: string): Promise<AutoRegulation | null> {
+export async function checkAutoRegulation(context: ChatContext, userApiKey: string, authToken?: string): Promise<AutoRegulation | null> {
   try {
-    if (!userApiKey) return null;
+    if (!userApiKey && !authToken) return null;
     await enforceRateLimit('auto_regulation');
-    const ai = new GoogleGenerativeAI(userApiKey);
-    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
-    const result = await model.generateContent("Analyze data for auto-regulation. JSON ONLY: {\"message\": string, \"type\": string, \"suggestion\": string}");
-    return parseJsonFromText<AutoRegulation>(result.response.text());
+    if (userApiKey) {
+      const ai = new GoogleGenerativeAI(userApiKey);
+      const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
+      const result = await model.generateContent(buildAgenticPrompt(context) + "\nAnalyze data for auto-regulation. JSON ONLY: {\"message\": string, \"type\": string, \"suggestion\": string}");
+      return parseJsonFromText<AutoRegulation>(result.response.text());
+    } else if (authToken) {
+      const systemPrompt = buildAgenticPrompt(context);
+      return await callGeminiProxy<AutoRegulation>('auto_regulation', { systemPrompt }, authToken);
+    }
+    return null;
   } catch { return null; }
 }
 
-export async function generateGroceryList(context: ChatContext, userApiKey: string): Promise<GroceryList> {
-  if (!userApiKey) throw new Error('API key required.');
+export async function generateGroceryList(context: ChatContext, userApiKey: string, authToken?: string): Promise<GroceryList> {
   await enforceRateLimit('grocery_list');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
-  const result = await model.generateContent("Generate grocery list. JSON ONLY: {\"categories\": [{\"category\": string, \"items\": string[]}]}");
-  const parsed = parseJsonFromText<{ categories: GroceryCategory[] }>(result.response.text());
-  return { categories: parsed.categories || [], generatedAt: new Date().toISOString() };
+  const systemPrompt = buildAgenticPrompt(context);
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
+    const result = await model.generateContent(systemPrompt + "\nGenerate grocery list. JSON ONLY: {\"categories\": [{\"category\": string, \"items\": string[]}]}");
+    const parsed = parseJsonFromText<{ categories: GroceryCategory[] }>(result.response.text());
+    return { categories: parsed.categories || [], generatedAt: new Date().toISOString() };
+  } else if (authToken) {
+    const parsed = await callGeminiProxy<{ categories: GroceryCategory[] }>('grocery_list', { systemPrompt }, authToken);
+    return { categories: parsed.categories || [], generatedAt: new Date().toISOString() };
+  }
+  throw new Error('API key required.');
 }
 
-export async function matchMacros(remaining: { protein: number; carbs: number; fat: number; calories: number }, preferences: string, userApiKey: string): Promise<MacroMatch[]> {
-  if (!userApiKey) throw new Error('API key required.');
+export async function matchMacros(remaining: { protein: number; carbs: number; fat: number; calories: number }, preferences: string, userApiKey: string, authToken?: string): Promise<MacroMatch[]> {
   await enforceRateLimit('match_macros');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
-  const result = await model.generateContent(`Suggest foods for macros: P:${remaining.protein}g. JSON ONLY: {\"matches\": [{\"food_name\": string, \"calories\": number, \"protein\": number, \"carbs\": number, \"fat\": number, \"serving_size\": string}]}`);
-  const parsed = parseJsonFromText<{ matches: MacroMatch[] }>(result.response.text());
-  return parsed.matches || [];
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
+    const result = await model.generateContent(`Suggest foods for macros: P:${remaining.protein}g. JSON ONLY: {\"matches\": [{\"food_name\": string, \"calories\": number, \"protein\": number, \"carbs\": number, \"fat\": number, \"serving_size\": string}]}`);
+    const parsed = parseJsonFromText<{ matches: MacroMatch[] }>(result.response.text());
+    return parsed.matches || [];
+  } else if (authToken) {
+    const res = await callGeminiProxy<{ matches: MacroMatch[] }>('match_macros', { remaining, preferences }, authToken);
+    return res.matches || [];
+  }
+  throw new Error('API key required.');
 }
 
-export async function parseVoiceLog(transcript: string, userApiKey: string): Promise<VoiceLogResult> {
-  if (!userApiKey) throw new Error('API key required.');
+export async function parseVoiceLog(transcript: string, userApiKey: string, authToken?: string): Promise<VoiceLogResult> {
   await enforceRateLimit('voice_log');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
-  const result = await model.generateContent(`Parse transcript: ${transcript}. JSON ONLY.`);
-  const parsed = parseJsonFromText<VoiceLogResult>(result.response.text());
-  return { ...parsed, raw_transcript: transcript };
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL, generationConfig: { responseMimeType: 'application/json' } });
+    const result = await model.generateContent(`Parse transcript: ${transcript}. JSON ONLY.`);
+    const parsed = parseJsonFromText<VoiceLogResult>(result.response.text());
+    return { ...parsed, raw_transcript: transcript };
+  } else if (authToken) {
+    const parsed = await callGeminiProxy<VoiceLogResult>('voice_log', { transcript }, authToken);
+    return { ...parsed, raw_transcript: transcript };
+  }
+  throw new Error('API key required.');
 }
 
-export async function generateRoast(context: ChatContext, streakType: string, streakDays: number, userApiKey: string): Promise<string> {
-  if (!userApiKey) throw new Error('API key required.');
+export async function generateRoast(context: ChatContext, streakType: string, streakDays: number, userApiKey: string, authToken?: string): Promise<string> {
   await enforceRateLimit('roast');
-  const ai = new GoogleGenerativeAI(userApiKey);
-  const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
-  const result = await model.generateContent(`Roast user for breaking ${streakDays} day ${streakType} streak (max 2 sentences).`);
-  return result.response.text().trim();
+  if (userApiKey) {
+    const ai = new GoogleGenerativeAI(userApiKey);
+    const model = ai.getGenerativeModel({ model: PERSONAL_MODEL });
+    const result = await model.generateContent(`Roast user for breaking ${streakDays} day ${streakType} streak (max 2 sentences).`);
+    return result.response.text().trim();
+  } else if (authToken) {
+    const res = await callGeminiProxy<{ text: string }>('roast', { streakType, streakDays }, authToken);
+    return res.text || 'Ouch, that streak break hurts!';
+  }
+  throw new Error('API key required.');
 }
 
 // ── Product Analysis ──────────────────────────────────────────────────

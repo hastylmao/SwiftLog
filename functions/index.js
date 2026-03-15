@@ -158,9 +158,11 @@ Respond ONLY in JSON:
           });
           geminiText = result.response.text();
         } else if (type === "nutrition_label") {
-          const prompt = `Read this packaged food nutrition label image. Mentally reorient if needed.
-Priorities: Extract nutrition facts table, product name, brand, and weight.
-Respond ONLY in JSON:
+          const prompt = `You are a nutrition log assistant. Read the provided nutrition facts table image. 
+Extract the following details as accurately as possible. Mentally reorient the image if it is sideways or upside down.
+Prioritize: Product Name, Brand, Serving Size, Calories, Protein, Carbs, Fat, Sugar, Fiber, Sodium (mg), Saturated Fat, Trans Fat, and Cholesterol (mg).
+If a value is not found, use a reasonable estimate for that specific product type.
+Respond ONLY in JSON format following this structure:
 {
   "product_name": string, "brand": string, "serving_size": string, "product_weight_g": number,
   "calories": number, "protein": number, "carbs": number, "fat": number, "sugar": number, "fiber": number,
@@ -179,8 +181,9 @@ Respond ONLY in JSON:
           });
           geminiText = result.response.text();
         } else if (type === "front_package") {
-          const prompt = `Analyze the front of this packaging. Identify the product name and brand. Estimate full nutritional profile based on known data or similar products.
-Respond ONLY in JSON:
+          const prompt = `You are a nutrition analyst. Look at the front of this food packaging.
+Identify the exact product and brand. Based on your knowledge database of nutritional information for this specific product (or very similar ones), provide a full nutritional profile.
+Respond ONLY in JSON format following this structure:
 {
   "product_name": string, "brand": string, "serving_size": string, "product_weight_g": number,
   "calories": number, "protein": number, "carbs": number, "fat": number, "sugar": number, "fiber": number,
@@ -197,6 +200,49 @@ Respond ONLY in JSON:
             }],
             generationConfig: { responseMimeType: "application/json" }
           });
+          geminiText = result.response.text();
+        } else if (type === "workout") {
+          const prompt = `You are a workout log parser. Given a natural language description of a workout, extract structured data. Respond ONLY in JSON: {"exercises": [{"name": string, "sets": [{"weight_kg": number, "reps": number}]}]}.\n\nDescription: ${payload.description}`;
+          const result = await model.generateContent({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          });
+          geminiText = result.response.text();
+        } else if (type === "advice") {
+          const prompt = `${payload.systemPrompt}\nGive 1 short piece of advice.`;
+          const result = await model.generateContent(prompt);
+          geminiText = result.response.text();
+        } else if (type === "auto_regulation") {
+          const prompt = `${payload.systemPrompt}\nAnalyze data for auto-regulation. JSON ONLY: {"message": string, "type": string, "suggestion": string}`;
+          const result = await model.generateContent({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          });
+          geminiText = result.response.text();
+        } else if (type === "grocery_list") {
+          const prompt = `${payload.systemPrompt}\nGenerate grocery list. JSON ONLY: {"categories": [{"category": string, "items": string[]}]}`;
+          const result = await model.generateContent({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          });
+          geminiText = result.response.text();
+        } else if (type === "match_macros") {
+          const prompt = `Suggest foods for macros: P:${payload.remaining.protein}g, C:${payload.remaining.carbs}g, F:${payload.remaining.fat}g. JSON ONLY: {"matches": [{"food_name": string, "calories": number, "protein": number, "carbs": number, "fat": number, "serving_size": string}]}`;
+          const result = await model.generateContent({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          });
+          geminiText = result.response.text();
+        } else if (type === "voice_log") {
+          const prompt = `Parse transcript: ${payload.transcript}. JSON ONLY.`;
+          const result = await model.generateContent({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          });
+          geminiText = result.response.text();
+        } else if (type === "roast") {
+          const prompt = `Roast user for breaking ${payload.streakDays} day ${payload.streakType} streak (max 2 sentences).`;
+          const result = await model.generateContent(prompt);
           geminiText = result.response.text();
         } else {
           return res.status(400).json({ error: "Unsupported request type" });

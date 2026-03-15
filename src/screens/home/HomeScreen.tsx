@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useCallback, useEffect, useState } from 'react';
+import React, { useMemo, useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Image, Alert } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +9,7 @@ import { useApp } from '../../store/AppContext';
 import MultiMacroRing from '../../components/ui/MultiMacroRing';
 import AnimatedBackground from '../../components/ui/AnimatedBackground';
 import { getDailyAdvice, checkAutoRegulation, matchMacros, parseVoiceLog } from '../../services/gemini';
+import { auth } from '../../services/firebase';
 import { getMuscleIcon } from '../../constants/icons';
 import { AutoRegulation, MacroMatch, VoiceLogResult } from '../../types';
 import { getTodayString } from '../../services/cache';
@@ -110,7 +111,7 @@ export default function HomeScreen({ navigation }: any) {
         todayStepsLogs,
         todayCardioLogs,
         todaySleepLogs,
-      }, settings?.gemini_api_key || '');
+      }, settings?.gemini_api_key || '', await auth.currentUser?.getIdToken() || undefined);
       setAdvice(response);
     } catch (error) {
       console.warn('Advice error:', error);
@@ -148,21 +149,22 @@ export default function HomeScreen({ navigation }: any) {
 
   // Auto-regulation check
   useEffect(() => {
-    if (!user || autoRegDismissed || autoReg) return;
-    const latestSleepLocal = todaySleepLogs[0];
-    const sleepHours = latestSleepLocal
-      ? Math.abs(new Date(latestSleepLocal.wake_at).getTime() - new Date(latestSleepLocal.sleep_at).getTime()) / 3600000
-      : undefined;
-    const calsSoFar = todayFoodLogs.reduce((s, f) => s + f.calories, 0);
-    checkAutoRegulation(
-      {
-        sleepHours,
-        caloriesToday: calsSoFar,
-        targetCalories: settings?.target_calories || 2000,
-        workoutsToday: todayWorkoutLogs.length,
-      },
-      settings?.gemini_api_key || '',
-    ).then(r => { if (r) setAutoReg(r); }).catch(() => {});
+    const apiKey = settings?.gemini_api_key || '';
+    const getAuthToken = async () => {
+      if (apiKey) return undefined;
+      return await auth.currentUser?.getIdToken();
+    };
+    getAuthToken().then(authToken => {
+      checkAutoRegulation(
+        {
+          user, settings, todayFoodLogs, todayWaterLogs, todayWorkoutLogs,
+          weightLogs, activeSplit, splitDays, achievements,
+          todaySupplementLogs, todayStepsLogs, todayCardioLogs, todaySleepLogs,
+        },
+        apiKey,
+        authToken
+      ).then(r => { if (r) setAutoReg(r); }).catch(() => {});
+    });
   }, [user]);
 
   const handleMacroMatch = async () => {
@@ -176,7 +178,9 @@ export default function HomeScreen({ navigation }: any) {
         carbs: Math.max(0, (settings?.target_carbs || 250) - totals.carbs),
         fat: Math.max(0, (settings?.target_fat || 65) - totals.fat),
       };
-      const matches = await matchMacros(remaining, { diet_type: settings?.diet_type || 'standard' }, settings?.gemini_api_key || '');
+      const apiKey = settings?.gemini_api_key || '';
+      const authToken = !apiKey ? await auth.currentUser?.getIdToken() : undefined;
+      const matches = await matchMacros(remaining, 'Standard diet', apiKey, authToken);
       setMacroMatches(matches);
     } catch {}
     setMacroMatchLoading(false);
@@ -186,7 +190,9 @@ export default function HomeScreen({ navigation }: any) {
     if (!voiceText.trim()) return;
     setVoiceLoading(true);
     try {
-      const result = await parseVoiceLog(voiceText, settings?.gemini_api_key || '');
+      const apiKey = settings?.gemini_api_key || '';
+      const authToken = !apiKey ? await auth.currentUser?.getIdToken() : undefined;
+      const result = await parseVoiceLog(voiceText, apiKey, authToken);
       setVoiceResult(result);
     } catch {}
     setVoiceLoading(false);
